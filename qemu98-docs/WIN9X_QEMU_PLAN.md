@@ -1,11 +1,13 @@
 # Win9x-Tailored QEMU Fork — Architectural Reference
 
 > **Status:** Living design document. Update decisions inline as they evolve.
+> 
 > **Audience:** Future-us coming back to this project after a break, and any
 > new contributor trying to understand why things are the way they are.
+> 
 > **Scope:** This file describes *what we are building, why, and how each
 > piece fits together.* It is not a step-by-step how-to-build manual — see
-> `BUILD.md` (TODO) or the upstream QEMU docs for that. The focus is on the
+> `BUILD.md` (Also a living design document) or the upstream QEMU docs for that. The focus is on the
 > architecture of Win9x add-ons.
 
 ---
@@ -17,7 +19,9 @@ We are forking QEMU to virtualize **Windows 95 / 98 / ME (Win9x)** PCs of the
 Direct3D 5/6/7), audio, CD-ROM mounting (CUE/BIN), host integration, and
 pixel-perfect scaling.
 
-This fork should add a `guest-tools/` tree containing the Win9x-side DLLs/VxD installer.
+This fork should add a `guest-tools/` tree containing the Win9x-side DLLs/VxD installer,
+and a **`manager/`** tree containing the QEMU98 Manager — a standalone GTK4/Vala
+desktop GUI for creating and managing Win9x virtual machines (see `VM_MANAGER.md`).
 **Three of the most expensive customizations** (CUE/BIN block driver, a
 nearest-neighbor scaler, and a hypercall backdoor PCI device). 
 **Three of the most guest-specific customizations** (Glide/D3D
@@ -59,6 +63,15 @@ shims, Win9x VxD, installer) live entirely inside `guest-tools/`.
 - Linux: KVM, fully functional.
 - Windows: WHPX (planned, FFMA bindings).
 
+### VM Management
+- **QEMU98 Manager** — standalone GTK4/Vala desktop GUI (see `VM_MANAGER.md`).
+- VirtualBox-style VM list, creation wizard, device configurator.
+- Live media swap (ISO/CUE/BIN hot-swap from the GUI).
+- Snapshot management (take, restore, delete) with chain visualization.
+- Disk image creation (raw, qcow2, VHD) via integrated `qemu-img` wrapper.
+- Per-VM JSON configuration stored in `~/.local/share/qemu98/machines/`.
+- Full QMP-based runtime control — no libvirt dependency.
+
 ---
 
 ## 2. The Conversation Arc
@@ -92,6 +105,19 @@ Confirmed Danaozhong/3dfx-Glide-API is the **Glide SDK**, not a hypercall shim
 (**the shim is something we must write ourselves** — that is what
 nGlide / dgVoodoo / qemu-3dfx do). Confirmed `d7vk` is Win32-only and won't
 work on Win9x.
+
+### Turn 4 — VM Manager (virt-manager vs custom)
+> "Can we use virt-manager or Cockpit for managing VMs, or should we
+> build something custom?"
+
+Outcome: **Build a custom GTK4/Vala desktop manager.** libvirt adds an 
+unnecessary abstraction layer that doesn't support our custom devices
+(Voodoo3, hypback, CUE/BIN block driver). The manager is a separate process 
+that communicates with QEMU exclusively via QMP over Unix sockets — it never 
+links against QEMU libraries. This keeps the QEMU fork mergeable with 
+upstream and the manager independently versioned.
+
+Architecture documented in full in `VM_MANAGER.md`.
 
 ---
 
@@ -186,9 +212,11 @@ code we will never need.
 - `qemu-system-x86_64` — the 64-bit host binary. Same i440FX machine, but
   with 64-bit host perspective. Useful for PCIe-passthrough experiments.
 - `qemu-img`, `qemu-io`, `qemu-nbd` — disk-image utilities.
+- `qemu98-manager` — the standalone VM Manager GUI (GTK4/Vala). Built when
+  `--build-manager` meson option is enabled (auto by default if Vala and
+  GTK4 are available).
 
-`make install` drops all four into `/usr/local/bin/` (or wherever
-`--prefix` points).
+`make install` drops all binaries into `${prefix}/bin/`.
 
 ### 3.4 Persistence
 
@@ -212,9 +240,61 @@ step are missing `-dev` packages (e.g., `libasound2-dev`, `libpulse-dev`,
 **Decision: Keep `qemu` existing code as unmodified as possible, add new file and config options as needed
 and eventually add external projects in the `subprojects/` directory.
 
+### 4.2 Component Map
+
+The project now comprises three self-contained trees:
+
+| Tree           | Language    | Purpose                                    | Location                |
+|----------------|-------------|--------------------------------------------|-------------------------|
+| QEMU core      | C           | Modified QEMU with Win9x patches           | Repo root (in-tree)     |
+| `guest-tools/` | C/MASM/NSIS | Win9x guest-side DLL shims, VxD, installer | Repo root (out-of-tree) |
+| `manager/`     | Vala → C    | QEMU98 Manager GTK4 desktop GUI            | Repo root (out-of-tree) |
+
+Each tree has its own build system (meson for QEMU + manager, custom Makefile 
+or MinGW cross for guest-tools), its own versioning, and its own test suite.
+The coupling points are:
+
+- **Manager ↔ QEMU:** QMP over Unix sockets (JSON-RPC, versioned protocol).
+- **Manager ↔ guest-tools:** Indirect — the manager spawns the QEMU binary 
+  that the guest tools talk to. No direct ABI.
+- **QEMU ↔ guest-tools:** The hypercall ABI (ring-3 DLL → VxD → MMIO → QEMU).
+  Versioned via `HYP_ABI_VERSION`.
+
+Full architecture of the manager is documented in `VM_MANAGER.md`.
+
 ---
 
 ## 5. Feature Implementation Roadmap
+
+### 5.0 Tier 0 — VM Manager (parallel track, can start anytime after Tier 1)
+
+The QEMU98 Manager is a standalone GTK4/Vala application. It depends only on
+the QEMU CLI and QMP protocol, both of which are stable. It can be developed
+in parallel with the QEMU-side features.
+
+Full architecture: `VM_MANAGER.md`.
+
+#### 5.0.1 Manager Phase 1 — Skeleton
+- Meson build integration, GtkApplication, main window, menu bar.
+- ConfigStore: JSON config read/write with schema v1.
+
+#### 5.0.2 Manager Phase 2 — VM Lifecycle
+- ProcessManager: CLI builder, `GLib.Subprocess` spawn, SIGCHLD monitor.
+- QmpClient: Unix socket connect, greeting, command dispatch, event stream.
+- VmController: State machine (stopped→running→paused→stopped).
+
+#### 5.0.3 Manager Phase 3 — Configuration UI
+- VM creation wizard (GtkAssistant).
+- Tabbed VM config editor (General, Devices, Storage, Network tabs).
+- Disk image creation wizard (wraps `qemu-img`).
+
+#### 5.0.4 Manager Phase 4 — Runtime Operations
+- Live CD/floppy media panel with CUE/BIN support.
+- Snapshot manager (take/restore/delete, chain visualization).
+
+#### 5.0.5 Manager Phase 5 — Polish
+- `.desktop` file, app icon, keyboard shortcuts.
+- Error handling, integration tests.
 
 ### 5.1 Tier 1 — Easy, do first
 
@@ -545,11 +625,11 @@ Patches:
 0004-hypercall-backdoor-pci              — hw/misc/hypback.c (T2)
 0005-glide-host-renderer-vulkan          — hw/display/voodoo_renderer.c (T3)
 0006-glide-host-renderer-opengl-fallback — same file, fallback path (T3)
+`manager/`                               — QEMU98 Manager GTK4/Vala GUI (T0)
 ```
 
-`guest-tools/` is independent of QEMU versions and has its own release
-cadence (more like vbox guest additions: tied to a specific hypercall ABI
-version, not to the underlying QEMU build).
+`guest-tools/` and `manager/` are independent of QEMU versions and have their
+own release cadence.
 
 ---
 
@@ -666,6 +746,13 @@ an estimate of self-contained scope.
 - [ ] **S2**: Linux distro (Gentoo 9x, FreeDOS, WinME) install scripts.
 - [ ] **S3**: docker-compose-style orchestration for multi-VM test runners.
 
+### VM Manager (parallel track — see `VM_MANAGER.md` §10)
+- [ ] **M1**: Skeleton — meson build, GtkApplication, window, ConfigStore. (1 week)
+- [ ] **M2**: VM Lifecycle — ProcessManager, QmpClient, VmController. (1–2 weeks)
+- [ ] **M3**: Configuration UI — Wizard, editor, disk image helper. (2 weeks)
+- [ ] **M4**: Runtime Operations — Media panel, snapshot manager. (2 weeks)
+- [ ] **M5**: Polish — .desktop, icons, error handling, tests. (1 week)
+
 ---
 
 ## 9. Open Questions / Deferred Decisions
@@ -685,6 +772,9 @@ Each should be re-visited at the indicated milestone.
 | Q8  | Should Win9x's VESA framebuffer still go through QEMU's `vga.c`, or pass through to voodoo3 too? | T2.3              | Default yes (vga.c upstream).                            |
 | Q9  | Do we need to ship our own SeaBIOS patch, e.g., for early USB?                                   | Now               | No, unless USB sticks fail to enumerate.                 |
 | Q10 | What to do about `d7vk` retries of Win9x compatibility?                                          | Strictly deferred | Don't try; go Mesa9x route.                              |
+| Q11 | Should the Manager embed the QEMU display window or launch it separately?                        | M1                | Launch separately (no GDK reparenting complexity).       |
+| Q12 | GTK4 or GTK3 for the Manager? QEMU's built-in display uses GTK3.                                 | M1                | GTK4 — separate process, no conflict.                    |
+| Q13 | Should we generate Vala bindings for QMP?                                                        | M1                | No — QMP is JSON-RPC; json-glib handles it natively.     |
 
 ---
 
@@ -728,6 +818,13 @@ Each should be re-visited at the indicated milestone.
 - **Mesa9x** — see above.
 - Walter Oney's "Windows 95 System Programming Secrets" — VxD reference.
 - Microsoft MSDN VxD DDK documentation (archived).
+
+### VM Manager
+- `VM_MANAGER.md` — Full architecture, data model, QMP protocol, build integration.
+- [Vala Language Reference](https://vala.dev/)
+- [GTK4 Documentation](https://docs.gtk.org/gtk4/)
+- [json-glib Reference](https://gnome.pages.gitlab.gnome.org/json-glib/)
+- [QEMU QMP Reference](https://www.qemu.org/docs/master/interop/qmp-spec.html)
 
 ---
 

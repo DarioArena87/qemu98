@@ -48,6 +48,15 @@ sudo apt install -y \
   libcurl4-gnutls-dev libvhost-user-dev zlib1g-dev
 ```
 
+For the **QEMU98 Manager** (GTK4/Vala GUI), additionally:
+```bash
+sudo apt install -y \
+  valac libgtk-4-dev libjson-glib-dev
+```
+> **Note:** The manager requires Vala ≥0.56, GTK4 ≥4.10, and json-glib ≥1.6.
+> It is built only when `--build-manager` is enabled (auto by default if
+> Vala and GTK4 are detected). Skip this if you don't need the GUI.
+
 The configure invocation in §2 explicitly disables: `--user / --linux-user /
 --bsd-user`, `--docs`, `--guest-agent`, `--qga-vss`, `--rust`, `--plugins`,
 `--tcg-interpreter`, `--virtfs`, `--vhost-user`, `--vfio-user-server`,
@@ -119,8 +128,34 @@ multi-core host.
 - `qemu-img`, `qemu-io`, `qemu-nbd` — disk-image utilities
 - `qemu-keymap`, `qemu-edid`, `qemu-bridge-helper`, `qemu-pr-helper`,
   `qemu-vmsr-helper`, `storage-daemon/qemu-storage-daemon`
+- `qemu98-manager` — VM Manager GUI (if Vala/GTK4 detected; see §3.1)
 
 `make install` drops everything into `${prefix}/bin/`.
+
+### 3.1 Building the VM Manager
+
+The QEMU98 Manager is built automatically when Vala and GTK4 are detected.
+Control it via the meson option:
+
+```bash
+# Enable explicitly (error if dependencies missing)
+meson setup build --build-manager=enabled
+
+# Disable explicitly (skip manager build)
+meson setup build --build-manager=disabled
+```
+
+The default is `auto`: builds the manager if `valac`, `libgtk-4-dev`, and
+`libjson-glib-dev` are found, silently skips otherwise.
+
+Verify it built:
+```bash
+./build/qemu98-manager --version
+# or just launch it:
+./build/qemu98-manager
+```
+
+Full architecture: `qemu98-docs/VM_MANAGER.md`.
 
 ---
 
@@ -270,10 +305,10 @@ There are two firmware-bearing directories in this repo. Knowing which one
 holds what matters when `make install` time comes or when you debug a
 "missing firmware" warning:
 
-| Path                                       | Contents                                         |
-|--------------------------------------------|--------------------------------------------------|
-| `pc-bios/` (source tree)                   | Prebuilt SeaBIOS (`bios-256k.bin`, `bios.bin`), keymaps, `optionrom/`, EDK2 shells |
-| `build/pc-bios/`                           | Only the rebuilt `edk2-*.fd` UEFI blobs generated during the build |
+| Path                     | Contents                                                                           |
+|--------------------------|------------------------------------------------------------------------------------|
+| `pc-bios/` (source tree) | Prebuilt SeaBIOS (`bios-256k.bin`, `bios.bin`), keymaps, `optionrom/`, EDK2 shells |
+| `build/pc-bios/`         | Only the rebuilt `edk2-*.fd` UEFI blobs generated during the build                 |
 
 Two consequences worth remembering:
 
