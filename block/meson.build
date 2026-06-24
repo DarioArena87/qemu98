@@ -75,6 +75,7 @@ endif
 if get_option('dmg').allowed()
   block_ss.add(files('dmg.c'))
 endif
+block_ss.add(files('cue.c'))
 if get_option('qed').allowed()
   block_ss.add(files(
     'qed-check.c',

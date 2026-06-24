@@ -1,0 +1,76 @@
+QA output created by 315
+
+=== Test 1: MODE1/2352 basic read ===
+image: TEST_DIR/cue-2352.bin
+file format: cue
+virtual size: 6 KiB (6144 bytes)
+--- read sector 0 (zeroes) ---
+00000000:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+read 16/16 bytes at offset 0
+16 bytes, X ops; XX:XX:XX.X (XXX YYY/sec and XXX ops/sec)
+--- read sector 1 (pattern) ---
+00000800:  4d 4f 44 45 31 5f 32 33 35 32 5f 4f 4b 00 00 00  MODE1.2352.OK...
+read 16/16 bytes at offset 2048
+16 bytes, X ops; XX:XX:XX.X (XXX YYY/sec and XXX ops/sec)
+
+=== Test 2: MODE1/2048 basic read ===
+image: TEST_DIR/cue-2048.bin
+file format: cue
+virtual size: 6 KiB (6144 bytes)
+--- read sector 0 (zeroes) ---
+00000000:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+read 16/16 bytes at offset 0
+16 bytes, X ops; XX:XX:XX.X (XXX YYY/sec and XXX ops/sec)
+--- read sector 1 (pattern) ---
+00000800:  4d 4f 44 45 31 5f 32 30 34 38 5f 4f 4b 00 00 00  MODE1.2048.OK...
+read 16/16 bytes at offset 2048
+16 bytes, X ops; XX:XX:XX.X (XXX YYY/sec and XXX ops/sec)
+
+=== Test 3: MODE1/2352 with pregap ===
+image: TEST_DIR/cue-pregap.bin
+file format: cue
+virtual size: 10 KiB (10240 bytes)
+--- read pregap sector 0 ---
+00000000:  50 52 45 47 41 50 5f 44 41 54 41 00 00 00 00 00  PREGAP.DATA.....
+read 16/16 bytes at offset 0
+16 bytes, X ops; XX:XX:XX.X (XXX YYY/sec and XXX ops/sec)
+--- read track data (sector 2) ---
+00001000:  54 52 41 43 4b 5f 44 41 54 41 00 00 00 00 00 00  TRACK.DATA......
+read 16/16 bytes at offset 4096
+16 bytes, X ops; XX:XX:XX.X (XXX YYY/sec and XXX ops/sec)
+
+=== Test 4: MODE2/2352 basic read ===
+image: TEST_DIR/cue-mode2.bin
+file format: cue
+virtual size: 6 KiB (6144 bytes)
+--- read sector 0 (zeroes) ---
+00000000:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+read 16/16 bytes at offset 0
+16 bytes, X ops; XX:XX:XX.X (XXX YYY/sec and XXX ops/sec)
+--- read sector 1 (pattern) ---
+00000800:  4d 4f 44 45 32 5f 32 33 35 32 5f 4f 4b 00 00 00  MODE2.2352.OK...
+read 16/16 bytes at offset 2048
+16 bytes, X ops; XX:XX:XX.X (XXX YYY/sec and XXX ops/sec)
+
+=== Test 5: INDEX 00 > INDEX 01 rejected ===
+qemu-img: Could not open 'TEST_DIR/cue-badidx.cue': INDEX 00 is after INDEX 01 in data track
+
+=== Test 6: multi-track CUE (MODE1/2352 + MODE2/2352) ===
+image: TEST_DIR/cue-multi.bin
+file format: cue
+virtual size: 10 KiB (10240 bytes)
+--- read track 1 sector 0 (MODE1 pattern) ---
+00000000:  54 52 41 43 4b 31 5f 44 41 54 41 00 00 00 00 00  TRACK1.DATA.....
+read 16/16 bytes at offset 0
+16 bytes, X ops; XX:XX:XX.X (XXX YYY/sec and XXX ops/sec)
+
+=== Test 7: write rejected (read-only) ===
+qemu-io: can't open device TEST_DIR/cue-2352.cue: Image is read-only
+
+=== Test 8: missing BIN file ===
+qemu-img: Could not open 'TEST_DIR/cue-missing.cue': Could not open 'TEST_DIR/nonexistent.bin': No such file or directory
+
+=== Test 9: audio-only CUE rejected ===
+qemu-img: Could not open 'TEST_DIR/cue-audio.cue': CUE file contains no data track with INDEX 01
+
+*** done

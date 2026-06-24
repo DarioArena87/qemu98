@@ -1,0 +1,228 @@
+#!/usr/bin/env bash
+# group: quick auto
+#
+# Test the CUE/BIN block driver: MODE1/2352, MODE1/2048, pregap, and
+# error handling.
+#
+# Copyright (C) 2024 Win9x-QEMU98 Project
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+# creator
+owner=dev@qemu98.local
+
+seq=$(basename "$0")
+echo "QA output created by $seq"
+
+status=1	# failure is the default!
+
+_cleanup()
+{
+    rm -f "$TEST_DIR"/cue-*.bin "$TEST_DIR"/cue-*.cue
+}
+trap "_cleanup; exit \$status" 0 1 2 3 15
+
+# get standard environment, filters and checks
+. ./common.rc
+. ./common.filter
+
+_supported_fmt cue
+_supported_proto file
+_unsupported_fmt generic
+
+QEMU_IO_NOFMT="$QEMU_IO_PROG $QEMU_IO_OPTIONS"
+
+# Filter to produce stable output: remove disk size (filesystem-dependent)
+# and child node details.
+_cue_filter_output()
+{
+    _filter_testdir | grep -v '^disk size:' | grep -v '^Child node' \
+        | grep -v '^    filename:' | grep -v '^    file length:' \
+        | grep -v '^    protocol type:' | grep -v '^    disk size:'
+}
+
+# --------------------------------------------------
+# Helper: create a BIN file with a test pattern at a
+# given absolute offset.  $6 is the raw-sector data offset
+# (default 16 for MODE1/2352).
+# --------------------------------------------------
+_make_bin()
+{
+    local name="$1"      # output file name
+    local raw_sec="$2"   # raw sector size (2352 or 2048)
+    local count="$3"     # number of sectors
+    local pattern="$4"   # pattern string to inject
+    local pat_ofs="$5"   # sector (index) where to place the pattern
+    local data_ofs="${6:-16}"  # byte offset of data within raw sector
+
+    dd if=/dev/zero "of=$TEST_DIR/$name" bs="$raw_sec" count="$count" \
+       status=none
+    if [ -n "$pattern" ]; then
+        if [ "$raw_sec" -eq 2048 ]; then
+            data_ofs=0
+        fi
+        local abs_ofs=$(( pat_ofs * raw_sec + data_ofs ))
+        printf '%s' "$pattern" | dd "of=$TEST_DIR/$name" bs=1 \
+                                 seek="$abs_ofs" conv=notrunc status=none
+    fi
+}
+
+# --------------------------------------------------
+# Helper: create a CUE file
+# --------------------------------------------------
+_make_cue()
+{
+    local name="$1"      # output .cue filename
+    local bin_name="$2"  # referenced .bin name
+    local mode="$3"      # MODE1/2352, MODE1/2048, or MODE2/2352
+    local index00="$4"   # optional INDEX 00 timestamp ("" for none)
+    local index01="$5"   # INDEX 01 timestamp
+
+    {
+        printf 'FILE "%s" BINARY\n' "$bin_name"
+        printf '  TRACK 01 %s\n' "$mode"
+        if [ -n "$index00" ]; then
+            printf '    INDEX 00 %s\n' "$index00"
+        fi
+        printf '    INDEX 01 %s\n' "$index01"
+    } > "$TEST_DIR/$name"
+}
+
+# --------------------------------------------------
+# Test 1: MODE1/2352 basic read
+# --------------------------------------------------
+echo
+echo "=== Test 1: MODE1/2352 basic read ==="
+_make_bin cue-2352.bin 2352 3 "MODE1_2352_OK" 1
+_make_cue cue-2352.cue cue-2352.bin "MODE1/2352" "" "00:00:00"
+$QEMU_IMG info -f cue "$TEST_DIR/cue-2352.cue" | _cue_filter_output
+echo "--- read sector 0 (zeroes) ---"
+$QEMU_IO_NOFMT -r -f cue -c "read -v 0 16" \
+    "$TEST_DIR/cue-2352.cue" | _filter_qemu_io | _filter_testdir
+echo "--- read sector 1 (pattern) ---"
+$QEMU_IO_NOFMT -r -f cue -c "read -v 2048 16" \
+    "$TEST_DIR/cue-2352.cue" | _filter_qemu_io | _filter_testdir
+
+# --------------------------------------------------
+# Test 2: MODE1/2048 basic read
+# --------------------------------------------------
+echo
+echo "=== Test 2: MODE1/2048 basic read ==="
+_make_bin cue-2048.bin 2048 3 "MODE1_2048_OK" 1
+_make_cue cue-2048.cue cue-2048.bin "MODE1/2048" "" "00:00:00"
+$QEMU_IMG info -f cue "$TEST_DIR/cue-2048.cue" | _cue_filter_output
+echo "--- read sector 0 (zeroes) ---"
+$QEMU_IO_NOFMT -r -f cue -c "read -v 0 16" \
+    "$TEST_DIR/cue-2048.cue" | _filter_qemu_io | _filter_testdir
+echo "--- read sector 1 (pattern) ---"
+$QEMU_IO_NOFMT -r -f cue -c "read -v 2048 16" \
+    "$TEST_DIR/cue-2048.cue" | _filter_qemu_io | _filter_testdir
+
+# --------------------------------------------------
+# Test 3: MODE1/2352 with pregap (INDEX 00)
+# --------------------------------------------------
+echo
+echo "=== Test 3: MODE1/2352 with pregap ==="
+_make_bin cue-pregap.bin 2352 5 "PREGAP_DATA" 0
+printf '%s' "TRACK_DATA" | dd "of=$TEST_DIR/cue-pregap.bin" bs=1 \
+    seek=$(( 2 * 2352 + 16 )) conv=notrunc status=none
+_make_cue cue-pregap.cue cue-pregap.bin "MODE1/2352" "00:00:00" "00:02:00"
+$QEMU_IMG info -f cue "$TEST_DIR/cue-pregap.cue" | _cue_filter_output
+echo "--- read pregap sector 0 ---"
+$QEMU_IO_NOFMT -r -f cue -c "read -v 0 16" \
+    "$TEST_DIR/cue-pregap.cue" | _filter_qemu_io | _filter_testdir
+echo "--- read track data (sector 2) ---"
+$QEMU_IO_NOFMT -r -f cue -c "read -v 4096 16" \
+    "$TEST_DIR/cue-pregap.cue" | _filter_qemu_io | _filter_testdir
+
+# --------------------------------------------------
+# Test 4: MODE2/2352 basic read (data at offset 24)
+# --------------------------------------------------
+echo
+echo "=== Test 4: MODE2/2352 basic read ==="
+_make_bin cue-mode2.bin 2352 3 "MODE2_2352_OK" 1 24
+_make_cue cue-mode2.cue cue-mode2.bin "MODE2/2352" "" "00:00:00"
+$QEMU_IMG info -f cue "$TEST_DIR/cue-mode2.cue" | _cue_filter_output
+echo "--- read sector 0 (zeroes) ---"
+$QEMU_IO_NOFMT -r -f cue -c "read -v 0 16" \
+    "$TEST_DIR/cue-mode2.cue" | _filter_qemu_io | _filter_testdir
+echo "--- read sector 1 (pattern) ---"
+$QEMU_IO_NOFMT -r -f cue -c "read -v 2048 16" \
+    "$TEST_DIR/cue-mode2.cue" | _filter_qemu_io | _filter_testdir
+
+# --------------------------------------------------
+# Test 5: INDEX 00 > INDEX 01 rejected
+# --------------------------------------------------
+echo
+echo "=== Test 5: INDEX 00 > INDEX 01 rejected ==="
+_make_bin cue-badidx.bin 2352 5 "" 0
+_make_cue cue-badidx.cue cue-badidx.bin "MODE1/2352" "00:04:00" "00:02:00"
+$QEMU_IMG info -f cue "$TEST_DIR/cue-badidx.cue" 2>&1 | _filter_testdir | head -1
+
+# --------------------------------------------------
+# Test 6: multi-track CUE (MODE1/2352 + MODE2/2352)
+# --------------------------------------------------
+echo
+echo "=== Test 6: multi-track CUE (MODE1/2352 + MODE2/2352) ==="
+# Sector 0: MODE1/2352 data area at offset 16 → "TRACK1_DATA"
+_make_bin cue-multi.bin 2352 5 "TRACK1_DATA" 0 16
+# Sector 2: MODE2/2352 data area at offset 24 → "TRACK2_DATA"
+printf '%s' "TRACK2_DATA" | dd "of=$TEST_DIR/cue-multi.bin" bs=1 \
+    seek=$(( 2 * 2352 + 24 )) conv=notrunc status=none
+# Multi-track CUE: first track is MODE1/2352 → driver uses this
+{
+    printf 'FILE "cue-multi.bin" BINARY\n'
+    printf '  TRACK 01 MODE1/2352\n'
+    printf '    INDEX 01 00:00:00\n'
+    printf '  TRACK 02 MODE2/2352\n'
+    printf '    INDEX 01 00:02:00\n'
+} > "$TEST_DIR/cue-multi.cue"
+$QEMU_IMG info -f cue "$TEST_DIR/cue-multi.cue" | _cue_filter_output
+echo "--- read track 1 sector 0 (MODE1 pattern) ---"
+$QEMU_IO_NOFMT -r -f cue -c "read -v 0 16" \
+    "$TEST_DIR/cue-multi.cue" | _filter_qemu_io | _filter_testdir
+
+# --------------------------------------------------
+# Test 7: qemu-io write rejected (read-only format)
+# --------------------------------------------------
+echo
+echo "=== Test 7: write rejected (read-only) ==="
+$QEMU_IO_NOFMT -f cue -c "write 0 512" \
+    "$TEST_DIR/cue-2352.cue" 2>&1 | _filter_testdir | head -1
+
+# --------------------------------------------------
+# Test 8: missing BIN file
+# --------------------------------------------------
+echo
+echo "=== Test 8: missing BIN file ==="
+printf 'FILE "nonexistent.bin" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n' \
+    > "$TEST_DIR/cue-missing.cue"
+$QEMU_IMG info -f cue "$TEST_DIR/cue-missing.cue" 2>&1 | _filter_testdir | head -1
+
+# --------------------------------------------------
+# Test 9: only audio tracks (no data track)
+# --------------------------------------------------
+echo
+echo "=== Test 9: audio-only CUE rejected ==="
+_make_bin cue-audio.bin 2352 5 "" 0
+printf 'FILE "cue-audio.bin" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n' \
+    > "$TEST_DIR/cue-audio.cue"
+$QEMU_IMG info -f cue "$TEST_DIR/cue-audio.cue" 2>&1 | _filter_testdir | head -1
+
+# success, all done
+echo
+echo "*** done"
+rm -f "$seq.full"
+status=0

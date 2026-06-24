@@ -217,7 +217,43 @@ Expected: `qemu-img info` reports a 64 MiB virtual size, ~196 KiB disk size;
 `qemu-img check` says *"No errors were found on the image."*; `qemu-io`
 returns 512 bytes of zero-filled data cleanly.
 
-### 4.4 Spawn a Win9x-capable VM (the headline test)
+### 4.4 CUE/BIN disk-image round-trip
+
+This proves the custom CUE/BIN block driver is wired correctly:
+
+```bash
+tmp=$(mktemp -d)
+# Create a 3-sector MODE1/2352 BIN file with a test pattern in sector 1
+dd if=/dev/zero of="$tmp/test.bin" bs=2352 count=3 status=none
+printf 'CUE_BIN_SMOKE_TEST' | dd of="$tmp/test.bin" bs=1 seek=$((2352+16)) conv=notrunc status=none
+
+# Create a matching CUE sheet
+cat > "$tmp/test.cue" <<'EOF'
+FILE "test.bin" BINARY
+  TRACK 01 MODE1/2352
+    INDEX 01 00:00:00
+EOF
+
+# Verify the CUE image is recognized
+../build/qemu-img info -f cue "$tmp/test.cue"
+
+# Read data from sector 0 (zeroes) and sector 1 (test pattern)
+../build/qemu-io -r -f cue -c "read 0 2048" "$tmp/test.cue"
+../build/qemu-io -r -f cue -c "read -v 2048 32" "$tmp/test.cue"
+
+rm -rf "$tmp"
+```
+
+Expected: `qemu-img info` reports `file format: cue`, virtual size
+6 KiB (6144 bytes) for the 3 raw sectors. `qemu-io read` at offset 0
+returns 2048 zero bytes. `qemu-io read -v` at offset 2048 returns the
+`CUE_BIN_SMOKE_TEST` pattern (starting at the 16-byte offset within
+the raw 2352-byte sector).
+
+If any command fails with "Unknown driver 'cue'" or "Could not read CUE
+file", the build is missing `block/cue.c` — check `block/meson.build`.
+
+### 4.5 Spawn a Win9x-capable VM (the headline test)
 
 The minimal VM configuration that can boot Windows 95/98/ME. We pass
 `-bios` explicitly so the firmware source is unambiguous in CI logs:
@@ -272,9 +308,9 @@ firmware-tree locations in this repo.
 If you see QEMU exit immediately with a missing-firmware error, or never
 print the SeaBIOS banner, the build is broken — see §5.
 
-### 4.5 Boot with a real Win9x guest
+### 4.6 Boot with a real Win9x guest
 
-Once §4.4 passes, you have a binary capable of *running* Windows 9x. To
+Once §4.5 passes, you have a binary capable of *running* Windows 9x. To
 actually boot one, attach a disk image containing a Win9x installation
 (or a bootable ISO/Win98 rescue disk):
 
@@ -290,7 +326,7 @@ actually boot one, attach a disk image containing a Win9x installation
 ```
 
 Note on memory size: 64 MiB is enough to reach SeaBIOS POST (verified in
-§4.4) but Windows 95/98/ME itself needs more to be usable once the GUI
+§4.5) but Windows 95/98/ME itself needs more to be usable once the GUI
 loads. **96 MiB is the practical minimum, 128 MiB is the recommended
 default.** Upstream QEMU defaults to 128 MiB if `-m` is omitted, which is
 appropriate for Win9x too.
@@ -314,7 +350,7 @@ Two consequences worth remembering:
 
 - QEMU's data directory at runtime resolves first to `build/pc-bios/`
   (since we run from `build/`). When you launch with an **explicit
-  `-bios ../pc-bios/bios-256k.bin`** flag (as §4.4 does), SeaBIOS is
+  `-bios ../pc-bios/bios-256k.bin`** flag (as §4.5 does), SeaBIOS is
   unambiguous in CI logs and can't drift.
 - Without `-bios`, our baseline verification observed that the VM still
   runs cleanly through the 10-second timeout without aborting. Whether
@@ -393,6 +429,9 @@ this fork:
   CPU (`pentium3` / `486`) are compiled in.
 - ✅ KVM acceleration auto-detects when `/dev/kvm` is present.
 - ✅ The block layer (qcow2 + qemu-io + qemu-img check) is working.
+- ✅ The CUE/BIN block driver is active — raw MODE1/2352 CD sectors are
+  correctly mapped to 2048-byte data sectors, readable via `qemu-img`
+  and `qemu-io`.
 - ✅ A SeaBIOS-equipped i440FX VM can be brought up with 64 MiB RAM and
   enumerates the standard IDE / FDC / CD-ROM boot devices. This is the
   exact hardware configuration Windows 95/98/ME expects to find at POST.
@@ -406,6 +445,5 @@ implementation.
 ## 7. Where to go next
 
 Once the baseline is green, move on to the implementation roadmap in
-`WIN9X_QEMU_PLAN.md` §5 §8. Tier 1 features (CUE/BIN block driver,
-nearest-neighbor scaler) are the smallest scope and are the natural next
-self-contained patches.
+`WIN9X_QEMU_PLAN.md` §5 §8. Tier 1 feature (nearest-neighbor scaler) is the smallest scope and
+the natural next self-contained patch (CUE/BIN is already done — see §4.4).

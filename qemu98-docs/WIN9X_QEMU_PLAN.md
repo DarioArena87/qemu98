@@ -298,76 +298,49 @@ Full architecture: `VM_MANAGER.md`.
 
 ### 5.1 Tier 1 — Easy, do first
 
-#### 5.1.1 CUE/BIN block driver
+#### 5.1.1 CUE/BIN block driver  ✅ IMPLEMENTED
 
-Why first: smallest scope, fully testable without any guest involvement.
+> **Status:** Complete — available as of first build.
 
-**Pattern reference:** `block/vvfat.c` and `block/dmg.c` — both define
-a `BlockDriver` vtable. QEMU's block layer is the cleanest extension point
-in the codebase.
+A read-only block format driver (`block/cue.c`) that parses `.cue` sheet
+files and exposes the referenced `.bin` file as 2048-byte CD data sectors.
 
-`0001-cue-bin-block-driver` adds `block/cue.c`:
+**Supported modes:**
+| CUE Mode       | Raw sector size | Data offset | Description                                |
+|----------------|-----------------|-------------|--------------------------------------------|
+| `MODE1/2352`   | 2352 bytes      | 16          | Standard CD-ROM data (sync+hdr+data+ECC)   |
+| `MODE2/2352`   | 2352 bytes      | 24          | CD-ROM XA Form 1 (sync+hdr+subhdr+data)    |
+| `MODE1/2048`   | 2048 bytes      | 0           | Sectors already 2048 bytes, no extra bytes |
 
-```c
-/* block/cue.c — sketch, NOT upstream-ready */
-#include "qemu/osdep.h"
-#include "block/block_int.h"
-#include "block/qdict.h"
-#include "qapi/error.h"
-#include "qemu/module.h"
-#include "qemu/option.h"
-#include "qemu/cutils.h"
+**Features:**
+- INDEX 00 (pregap) support — virtual image starts at pregap, not track start
+- Multi-track CUE files — first data track is used, audio tracks skipped
+- Validation: invalid timestamps, INDEX 00 > INDEX 01, and missing INDEX 01
+  all produce clear error messages
+- `.cue` extension auto-detection via `bdrv_probe` — `-f cue` is optional
 
-typedef struct BDRVCueState {
-    int       track;        /* current track index (1-based) */
-    uint64_t  off;          /* byte offset of current track data in BIN */
-    uint64_t  len;
-    char     *bin_path;     /* resolved reference to the .bin file */
-} BDRVCueState;
-
-static int cue_parse(const char *cue_text, BDRVCueState *s, Error **errp);
-static int cue_open(BlockDriverState *bs, QDict *options, int flags,
-                    Error **errp) {
-    BDRVCueState *s = bs->opaque;
-    QDict *opt;
-    int ret;
-
-    opt = qdict_new();
-    qdict_put_str(opt, "driver", "raw");  /* underlying BIN driver */
-    /* Parse INDEX 01 of FILE "..." */
-    /* Resolve path against the .cue path itself */
-
-    ret = bdrv_open(&bs->file, s->bin_path, NULL, BDRV_CHILD_IMAGE,
-                    BDRV_CHILD_FILTERED | BDRV_CHILD_PRIMARY, errp);
-    if (ret < 0) return ret;
-    return 0;
-}
-
-static int64_t cue_getlength(BlockDriverState *bs) {
-    return bs->total_sectors * BDRV_SECTOR_SIZE;
-}
-
-/* …close, get_info, etc… */
-
-BlockDriver bdrv_cue = {
-    .format_name     = "cue",
-    .instance_size   = sizeof(BDRVCueState),
-    .bdrv_parse_json = NULL,
-    .bdrv_open        = cue_open,
-    .bdrv_close       = cue_close,
-};
-
-static void cue_block_init(void)
-{
-    bdrv_register(&bdrv_cue);
-}
-block_init(cue_block_init);
+**Usage — mount a CUE/BIN image as CD-ROM:**
+```bash
+qemu-system-i386 -cdrom game.cue
+# or:
+qemu-system-i386 -drive file=game.cue,format=cue,media=cdrom,readonly=on
 ```
 
-Patch changes:
-- `block/meson.build` — one line: `block_ss.add(files('cue.c'))`.
-- Tests: extend `tests/qemu-iotests/` with a new test case that creates a
-  50 MB BIN, writes a CUE, opens with QEMU, reads sectors.
+**qemu-img / qemu-io support:**
+```bash
+qemu-img info -f cue game.cue
+qemu-img convert -f cue -O raw game.cue game.iso
+qemu-io -r -f cue -c "read 0 2048" game.cue
+```
+
+**Files modified:**
+| File                           | Change                                     |
+|--------------------------------|--------------------------------------------|
+| `block/cue.c`                  | New file — CUE/BIN block driver (~330 LOC) |
+| `block/meson.build`            | Added `cue.c` to `block_ss` sources        |
+| `tests/qemu-iotests/315`       | New test — 9 test cases covering all modes |
+| `tests/qemu-iotests/315.out`   | Expected output for test 315               |
+| `tests/qemu-iotests/check`     | Added `'cue'` to `format_list`             |
 
 #### 5.1.2 Nearest-neighbor scaler
 
@@ -619,7 +592,7 @@ they work. The Win9x-side driver (when needed) is the only new code.
 Patches:
 
 ```
-0001-cue-bin-block-driver                — block/cue.c (T1)
+0001-cue-bin-block-driver                — block/cue.c (T1)  ✅ IMPLEMENTED
 0002-nearest-scaler                      — ui/console-gl.c (T1/T2)
 0003-voodoo3-pci-device                  — hw/display/voodoo3.c (T2)
 0004-hypercall-backdoor-pci              — hw/misc/hypback.c (T2)
@@ -720,7 +693,7 @@ an estimate of self-contained scope.
 - [x] **Make and run** `qemu-system-i386 -M pc -cdrom ...` to confirm baseline build works. (1 hour)
 
 ### Week 1–2 — Tier 1
-- [ ] **T1.1**: implement CUE/BIN block driver (§5.1.1). Add test under `tests/qemu-iotests/`. (1–2 days)
+- [x] **T1.1**: implement CUE/BIN block driver (§5.1.1). Add test under `tests/qemu-iotests/`. (1–2 days)
 - [ ] **T1.2**: implement nearest-neighbor scaler patch (§5.1.2). (½ day)
 
 ### Week 2–4 — Tier 2
