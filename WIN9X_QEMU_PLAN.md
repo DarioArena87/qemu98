@@ -1,0 +1,763 @@
+# Win9x-Tailored QEMU Fork — Architectural Reference
+
+> **Status:** Living design document. Update decisions inline as they evolve.
+> **Audience:** Future-us coming back to this project after a break, and any
+> new contributor trying to understand why things are the way they are.
+> **Scope:** This file describes *what we are building, why, and how each
+> piece fits together.* It is not a step-by-step how-to-build manual — see
+> `BUILD.md` (TODO) or the upstream QEMU docs for that. The focus is on the
+> architecture of Win9x add-ons.
+
+---
+
+## 0. TL;DR
+
+We are forking QEMU to virtualize **Windows 95 / 98 / ME (Win9x)** PCs of the
+1995–2001 era with full host-side acceleration for graphics (3dfx Glide and
+Direct3D 5/6/7), audio, CD-ROM mounting (CUE/BIN), host integration, and
+pixel-perfect scaling.
+
+This fork should add a `guest-tools/` tree containing the Win9x-side DLLs/VxD installer.
+**Three of the most expensive customizations** (CUE/BIN block driver, a
+nearest-neighbor scaler, and a hypercall backdoor PCI device). 
+**Three of the most guest-specific customizations** (Glide/D3D
+shims, Win9x VxD, installer) live entirely inside `guest-tools/`.
+
+---
+
+## 1. Project Goals (verbatim from the original brief)
+
+### Core Virtualization
+- Hardware-accelerated CPU via **KVM** (Linux) and **WHPX** (Windows).
+- Pluggable device model — `-device` flags for arbitrary hardware.
+- BIOS/Firmware: SeaBIOS, OVMF, real BIOS ROM dumps.
+- Hybrid PC platform (i440FX-based) with full user customization.
+
+### Graphics & Display
+- Accelerated 2D/3D via DDraw/D3D 5/6/7 → host Vulkan/OpenGL.
+- 3dfx Glide API support.
+- Nearest-neighbor (pixel-perfect) upscaling, 4:3 aspect preserved
+  (e.g., 640×480 → 1920×1080 host).
+- VGA/SVGA/VESA emulation with full video BIOS.
+
+### Audio
+- Sound Blaster 16 / SB Pro / ESS, OPL3 FM synthesis.
+- MIDI via user-selectable SoundFonts.
+- Low-latency audio via OpenAL.
+
+### Storage & Media
+- CD/DVD images: ISO, **CUE/BIN**, ZIP, RAR, with hot-swap.
+- Floppy: IMG, hot-swap.
+- Shared folders exposed as removable drives.
+- Disk images: raw, QCOW2, VHD.
+
+### Host–Guest Integration
+- Bidirectional clipboard over serial.
+- Configurable mouse grab/release.
+
+### Cross-Platform
+- Linux: KVM, fully functional.
+- Windows: WHPX (planned, FFMA bindings).
+
+---
+
+## 2. The Conversation Arc
+
+This document is the consolidated outcome of separate discussion turns.
+Recording the arc makes future-me understand *why* certain decisions were
+made, not just what was decided.
+
+### Turn 1 — Build configuration
+> "I ran the upstream build commands; the full build takes forever."
+
+Outcome: ruled out-of-scope cross-arch TCG, BSD-user, docs, guest agent,
+and most block-format backends. Settled on a focused `./configure` for **only
+`i386-softmmu` and `x86_64-softmmu`** plus a curated set of feature flags.
+
+### Turn 2 — Submodule vs in-tree
+> "Can I make `qemu/` a git submodule and add features externally?"
+
+Outcome: technically yes for a single feature, but at the scope of Glide+DDraw
+shims plus the host-side Vulkan renderer it stops being viable. **We chose to
+fork** — the qemu code should remain mergeable with upstream (no fundamental 
+architectural changes), our deltas are versioned alongside.
+
+### Turn 3 — Paravirt hypercalls (vmdisp9x-style)
+> "What if I implement Glide and D3D as guest-side DLLs that issue
+> hypercalls to a QEMU PCI BAR?"
+
+Outcome: validated. The control flow is `ring-3 DLL → ring-0 VxD → MMIO
+poke → QEMU`. This matches the proven vmdisp9x/SoftGPU/Mesa9x blueprint.
+Confirmed Danaozhong/3dfx-Glide-API is the **Glide SDK**, not a hypercall shim
+(**the shim is something we must write ourselves** — that is what
+nGlide / dgVoodoo / qemu-3dfx do). Confirmed `d7vk` is Win32-only and won't
+work on Win9x.
+
+---
+
+## 3. Build Configuration
+
+### 3.1 Recommended `./configure` invocation
+
+```bash
+mkdir build && cd build
+../configure \
+  --target-list='i386-softmmu x86_64-softmmu' \
+  --disable-user --disable-linux-user --disable-bsd-user \
+  --disable-docs --disable-guest-agent --disable-qga-vss \
+  --disable-rust --disable-plugins --disable-tcg-interpreter \
+  --audio-drv-list='alsa,pa,pipewire,oss,sdl' \
+  --enable-kvm --enable-whpx \
+  --disable-virtfs --disable-vhost-user \
+  --disable-vfio-user-server --disable-libvduse --disable-vduse-blk-export \
+  --disable-rbd --disable-libiscsi --disable-libnfs --disable-libssh \
+  --disable-mpath --disable-rdma --disable-passt \
+  --disable-bzip2 --disable-lzfse --disable-lzo --disable-snappy --disable-zstd \
+  --disable-tpm --disable-smartcard --disable-u2f --disable-canokey \
+  --disable-usb-redir --disable-brlapi \
+  --disable-replication --disable-colo-proxy \
+  --disable-multiprocess \
+  --disable-cocoa \
+  --disable-spice --disable-spice-protocol --disable-dbus-display \
+  --enable-vnc --enable-gtk --enable-sdl --enable-slirp --enable-pixman \
+  --disable-virglrenderer --disable-rutabaga-gfx --disable-pvg \
+  --disable-fuse --disable-fuse-lseek --disable-igvm \
+  --disable-qpl --disable-uadk --disable-qatzip \
+  --enable-pie
+make -j$(nproc)
+```
+
+For the absolute fastest build, drop `x86_64-softmmu` from `--target-list` to
+get only the 32-bit system emulator.
+
+### 3.2 Why each flag
+
+#### Targets (single biggest win)
+- `--target-list='i386-softmmu x86_64-softmmu'` — the i440FX machine type
+  (`hw/i386/pc_piix.c`) is compiled into both binaries; we get both ABIs
+  without crossing arch lines.
+- `--disable-user --disable-linux-user --disable-bsd-user` — removes ~10
+  user-mode emulators and their cross-compiled runtimes.
+
+The upstream default builds **every `*-softmmu`** (≈28 architectures) plus
+all user-mode emulators. ~80% of wall-clock time is in cross-arch TCG/CPU
+code we will never need.
+
+#### Cross-platform accelerators
+- `--enable-kvm` — Linux in-kernel hypervisor. Auto-detected when `/dev/kvm`
+  exists, but explicit is clearer in a documented build. Works only on linux hosts.
+- `--enable-whpx` — Windows Hypervisor Platform. Auto-detected on Windows
+  hosts, Works only on Windows hosts.
+
+#### Audio (low-latency, host-side accelerators)
+- `--audio-drv-list='alsa,pa,pipewire,oss,sdl'` — host backends only.
+  We do *not* need `--enable-opengl` for audio; that's only for display GL
+  shader scaler which is a separate decision in §6.2.
+
+#### Graphics stacks (host-side UI)
+- `--enable-sdl` — SDL2 host windowing (the default candidate).
+- `--enable-gtk` — alternative host windowing, supports GTK3.
+- `--enable-vnc` — VNC server for remote access.
+- `--enable-slirp` — usermode networking stack.
+- `--enable-pixman` — image scaling primitive.
+- **Skipped:** `--disable-virglrenderer --disable-rutabaga-gfx --disable-pvg` —
+  virtio-gpu 3D acceleration paths are *not* what we need for Win9x guest
+  games (see §6.2 and §7.4). Keep these disabled.
+
+#### Things we explicitly do NOT need
+- TPM, smartcard, canokey, U2F (no modern Win9x applicability).
+- USB redirection, Braille APIs (no target usage).
+- Replication / colo proxy / multi-process QEMU (single-VM scope).
+- SPICE / DBus display.
+- VirtFS (we use 9pfs or shared-folder remap, not Plan 9 file system pass-through).
+- All the "expensive" compression backends (`bzip2`, `lzfse`, `lzo`,
+  `snappy`, `zstd`) — we don't need them for Win9x disk images.
+- FUSE, RBD, iSCSI, NFS, SSH block backends.
+- `/dev/qemu-vduse` style vduse paths (PostmarketOS phone targets, etc.).
+- Crypto accelerator plugins (`qpl`, `uadk`, `qatzip`).
+
+### 3.3 Build outputs
+
+`make` builds:
+
+- `qemu-system-i386` — the 32-bit host binary. **Primary target for Win9x.**
+  Win9x is x86-only. Don't bother with x86_64 unless you want to test
+  64-bit OSes in the same binary.
+- `qemu-system-x86_64` — the 64-bit host binary. Same i440FX machine, but
+  with 64-bit host perspective. Useful for PCIe-passthrough experiments.
+- `qemu-img`, `qemu-io`, `qemu-nbd` — disk-image utilities.
+
+`make install` drops all four into `/usr/local/bin/` (or wherever
+`--prefix` points).
+
+### 3.4 Persistence
+
+`./configure` writes `build/config.status`. Re-running with `--recheck`
+reproduces the exact same configuration. **Don't delete `config.status`.**
+
+### 3.5 Validation step
+
+Before pressing `make -j$(nproc)`, run `./configure` alone — it prints a
+summary of detected libraries and any missing ones. Most failures at this
+step are missing `-dev` packages (e.g., `libasound2-dev`, `libpulse-dev`,
+`libpipewire-0.3-dev`, `libslirp-dev`, `libpixman-1-dev`, `libsdl2-dev`,
+`libgtk-3-dev` on Debian/Ubuntu).
+
+---
+
+## 4. Architecture
+
+### 4.1 Decision
+
+**Decision: Keep `qemu` existing code as unmodified as possible, add new file and config options as needed
+and eventually add external projects in the `subprojects/` directory.
+
+---
+
+## 5. Feature Implementation Roadmap
+
+### 5.1 Tier 1 — Easy, do first
+
+#### 5.1.1 CUE/BIN block driver
+
+Why first: smallest scope, fully testable without any guest involvement.
+
+**Pattern reference:** `block/vvfat.c` and `block/dmg.c` — both define
+a `BlockDriver` vtable. QEMU's block layer is the cleanest extension point
+in the codebase.
+
+`0001-cue-bin-block-driver` adds `block/cue.c`:
+
+```c
+/* block/cue.c — sketch, NOT upstream-ready */
+#include "qemu/osdep.h"
+#include "block/block_int.h"
+#include "block/qdict.h"
+#include "qapi/error.h"
+#include "qemu/module.h"
+#include "qemu/option.h"
+#include "qemu/cutils.h"
+
+typedef struct BDRVCueState {
+    int       track;        /* current track index (1-based) */
+    uint64_t  off;          /* byte offset of current track data in BIN */
+    uint64_t  len;
+    char     *bin_path;     /* resolved reference to the .bin file */
+} BDRVCueState;
+
+static int cue_parse(const char *cue_text, BDRVCueState *s, Error **errp);
+static int cue_open(BlockDriverState *bs, QDict *options, int flags,
+                    Error **errp) {
+    BDRVCueState *s = bs->opaque;
+    QDict *opt;
+    int ret;
+
+    opt = qdict_new();
+    qdict_put_str(opt, "driver", "raw");  /* underlying BIN driver */
+    /* Parse INDEX 01 of FILE "..." */
+    /* Resolve path against the .cue path itself */
+
+    ret = bdrv_open(&bs->file, s->bin_path, NULL, BDRV_CHILD_IMAGE,
+                    BDRV_CHILD_FILTERED | BDRV_CHILD_PRIMARY, errp);
+    if (ret < 0) return ret;
+    return 0;
+}
+
+static int64_t cue_getlength(BlockDriverState *bs) {
+    return bs->total_sectors * BDRV_SECTOR_SIZE;
+}
+
+/* …close, get_info, etc… */
+
+BlockDriver bdrv_cue = {
+    .format_name     = "cue",
+    .instance_size   = sizeof(BDRVCueState),
+    .bdrv_parse_json = NULL,
+    .bdrv_open        = cue_open,
+    .bdrv_close       = cue_close,
+};
+
+static void cue_block_init(void)
+{
+    bdrv_register(&bdrv_cue);
+}
+block_init(cue_block_init);
+```
+
+Patch changes:
+- `block/meson.build` — one line: `block_ss.add(files('cue.c'))`.
+- Tests: extend `tests/qemu-iotests/` with a new test case that creates a
+  50 MB BIN, writes a CUE, opens with QEMU, reads sectors.
+
+#### 5.1.2 Nearest-neighbor scaler
+
+Why second: tiny patch (~5 lines), directly visible to users, no GPU work.
+
+`0002-nearest-scaler` modifies `ui/console-gl.c`:
+
+```diff
+@@ -120,8 +120,8 @@ void surface_gl_create_texture(...)
+ {
+     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ..., GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
++    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+ }
+```
+
+And the integer-scale aspect ratio is enforced via `vc->gfx.scale_x/y`.
+Upstream already has an integer multiplier path; our patch hooks in there.
+
+After this patch:
+- 640×480 → 1280×960 stretches with hard pixel edges (4:3 preserved).
+- 320×240 → 1920×1440 (single big pixel up-scaled 6×).
+- Hosts can still override the GL filter, but the *default for SDL/GL* is nearest.
+
+### 5.2 Tier 2 — Medium scope
+
+#### 5.2.1 Hypercall backdoor PCI device
+
+Pattern reference: `hw/misc/edu.c` (Educational Device, single PCI BAR
+used as scratch + command queue) and `hw/misc/pvpanic-pci.c` (single
+device, single function, MMIO poke semantics).
+
+QEMU-side device lives in `hw/misc/hypback.c`:
+
+```
+$ qemu-system-i386 -device hypback,id=hbe0
+$ lspci -nn (from inside guest) shows 1234:beef "Win9x HypBack Device"
+$ guest ring-0 driver maps BAR0 (64K MMIO)
+$ guest writes a hypercall packet (header + args) at BAR0+offset
+$ QEMU picks it up via memory_region_io_ops
+$ QEMU dispatches to registered handler (Glide, D3D, FS, …)
+```
+
+The ring-0 Win9x VxD layer lives in `guest-tools/vxd/`.
+
+#### 5.2.2 Voodoo3 PCI device (register-level)
+
+Pattern reference: `hw/display/vmware_vga.c` (12k LOC, register-level PCI
+VGA-ish device) and the historical `qemu-3dfx` patch series by kjliew.
+
+This is essentially a re-implementation of the 3dfx Banshee/Voodoo3 PCI
+config space + MMIO registers + AGP/PCI DMA tag list (for texture upload
+commands). ~1500 LOC target. The register layout already lives in the
+public spec; the upstream Mesa3D `xf86-video-glide` source has the
+reference register list.
+
+```c
+/* hw/display/voodoo3.c — register envelope sketch */
+#define VOODOO3_VENDOR_ID  0x121a
+#define VOODOO3_DEVICE_ID_BANSHEE 0x3d07  /* actually 0x121a+0x0003 in spec */
+#define VOODOO3_DEVICE_ID_VOODOO3 0x3d09
+
+#define VOODOO3_REG_STATUS     0x0000
+#define VOODOO3_REG_FB_BASE    0x0010
+#define VOODOO3_REG_AGP_CMD    0x0040
+#define VOODOO3_REG_2D_DST     0x0200
+#define VOODOO3_REG_3D_DST     0x0300
+/* …all ~600 regs… */
+
+static uint64_t voodoo3_mmio_read(void *opaque, hwaddr addr, unsigned size);
+static void     voodoo3_mmio_write(void *opaque, hwaddr addr,
+                                    uint64_t data, unsigned size);
+```
+
+Registration lives in `hw/display/Kconfig` (new `config VOODOO3` entry)
+and `hw/display/meson.build` (one-line `system_ss.add(...)`).
+
+Note: this device only exists if you actually need register-level
+compatibility (running real Win9x 3dfx drivers unmodified). For the
+paravirt hypercall path (§5.2.1 alone is enough; the guest DLL/VDD just
+talks to the backdoor device instead).
+
+### 5.3 Tier 3a — Guest tools stack (paravirt side)
+
+#### 5.3.1 Component layout
+
+`guest-tools/` tree (see §4.2):
+
+| Component       | Reality check                                                                                                                                                                                      |
+|-----------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `vxd/`          | ~500 LOC MASM source. Owns the BAR0 mapping, sets up MMU pages, dispatches IRQ-style completion events. **Critical path**, everything else depends on this.                                        |
+| `glide3x-shim/` | Replacement `glide3x.dll` and `glide2x.dll` that intercepts API calls and forwards them to the VxD. Reference implementations: `nGlide`, `dgVoodoo`, `qemu-3dfx`. Build with MinGW cross-compiler. |
+| `ddraw-shim/`   | Replacement `ddraw.dll` for DDraw-only games that don't use D3D. Smaller scope than D3D-shim.                                                                                                      |
+| `d3d-shim/`     | **Deferred.** See §7.5 — direct port of `d7vk` is not viable on Win9x. We will likely partner with Mesa9x instead.                                                                                 |
+| `lib9p/`        | Win9x client for the 9P protocol (used by `-virtfs` or `-fsdev local`). Replacement for plan9port FUSE shims. Reference: 9p-for-win32 / 9p-virtio existing partial implementations.                |
+| `installer/`    | NSIS or Inno Setup script that bundles everything for end users. Registers the DLL shims in SYSTEM.INI or via the registry (90s style).                                                            |
+
+#### 5.3.2 The hypercall protocol
+
+The MMIO BAR write layout: a single ABI queue with shared doorbell.
+
+```
++----------------+ 0x0000 : header.dw0 (op | len)
+| HYP_DOORBELL   | 0x0004 : header.dw1 (arg_count | flags)
++----------------+ 0x0008 : arg[0].lo
+| HYP_ARG_REGION | 0x000C : arg[0].hi
+| (32 args × 8B) | 0x0010 : arg[1].lo  … etc …
++----------------+ 0x0108 : guest_signal_mask (in)
+| HYP_STATUS     | 0x010C : host_signal_mask (out)
++----------------+ 0x0200 : completion.fence_lo
+| (fence / log)  | 0x0204 : completion.fence_hi
+|                | 0x0208 : log_ring[256] (32-byte entries)
++----------------+ 0x1000 : start of guest-controlled DMA heap
+```
+
+Where `op` covers the union:
+
+```
+HYP_GLIDE_TEX_UPLOAD       0x1001
+HYP_GLIDE_TEX_SETPALETTE   0x1002
+HYP_GLIDE_BUFFER_SWAP      0x1003
+HYP_GLIDE_VERTEX_SUBMIT    0x1004
+HYP_D3D_TEX_UPLOAD         0x2001
+HYP_D3D_DRAW_PRIM          0x2002
+HYP_D3D_PRESENT            0x2003
+HYP_FS_OPEN                0x3001
+HYP_FS_READ                0x3002
+HYP_FS_WRITE               0x3003
+HYP_FS_CLOSE               0x3004
+HYP_FS_READDIR             0x3005
+HYP_CLIPBOARD_OUT          0x4001
+HYP_CLIPBOARD_IN           0x4002
+HYP_AUDIO_PLAY             0x5001
+HYP_AUDIO_MIDI             0x5002
+```
+
+Each guest subsystem picks a `op` range and registers its own QEMU host
+handler. The VxD on the guest side is the *single* writer of `HYP_DOORBELL`;
+DLLs in ring-3 go through the VxD via standard IOCTL, not by direct MMIO.
+
+### 5.4 Tier 3b — Host-side renderer (Glide → Vulkan/OpenGL)
+
+Lives in patches `0005-glide-host-renderer-vulkan` and `0006-glide-host-renderer-opengl-fallback`.
+
+**Architecture:** A new optional module emitted at QEMU build time called
+`hw/display/voodoo_renderer.c` (or similar). The QEMU-emulated Voodoo3
+device, instead of writing into a host RAM framebuffer, calls into the
+renderer to produce a Vulkan texture / OpenGL texture corresponding to
+the current Glide front buffer.
+
+When vulkan renderer chosen:
+```c
+static void voodoo3_present(Voodoo3State *s) {
+    VkCommandBuffer cmd = renderer_acquire_cmd_buffer(s->renderer);
+    /* upload s->texture_handle to a host VkImage */
+    renderer_submit_present(s->renderer, cmd, s->vk_image);
+}
+```
+
+OpenGL fallback does the same with a single texture upload + present.
+
+The Vulkan path is the production target; OpenGL is for hosts without a
+Vulkan ICD (rare on x86 desktops; common on Asahi/Apple).
+
+### 5.5 Tier 3c — D3D paravirt (deferred)
+
+D3D 5/6/7 → host Vulkan. **Realistically deferred** because:
+
+- `d7vk` is Win32-only — its entire ABI assumes NT `PE`-format sections,
+  NT-process threading, Win32k syscall surfaces for DDI. Win9x has none
+  of that. We can't just `wine`-port it; we'd fork it.
+- Realistic alternative: **partial integration with Mesa9x**. Mesa9x is
+  the upstream Mesa fork that builds natively on Win9x. If we get it to
+  call into the VxD from its WGL/D3D wrappers, we get D3D5/6 coverage
+  "for free." D3D7 still requires hand-written translation.
+
+**Plan:** partner with Mesa9x upstream when stable enough. Until then,
+ship DDraw-only games and the Glide path. D3D7 is a v2 feature.
+
+### 5.6 Tier 4 (optional, deferred) — Shared clipboard & 9P shared folders
+
+#### 5.6.1 Clipboard
+
+Upstream QEMU's `-serial` tunneling gives us bidirectional text already
+for free if the Win9x side just runs `intercept.com` or `win95term`
+against a null modem. The hypercall path (HYP_CLIPBOARD_OUT / IN) is
+useful if you want it without the null-modem workaround, but it is
+**not required** for v1.
+
+Decision for v1: **use `-serial` tunnel, ship HYP_CLIPBOARD as v2.**
+
+#### 5.6.2 Shared folders (9P)
+
+Win9x's lack of virtio means we either:
+- (a) write a Win9x 9P client (`lib9p` in `guest-tools/`), or
+- (b) write a custom server (NBD or custom MMIO) and a Win9x client that
+  speaks that.
+
+(a) is more standard but harder (Win9x has limited TCP/IP stack diversity
+in 1995 era; later Win98SE installable networking helps). (b) is smaller
+scope.
+
+Decision: **punt to v2**, focus on floppy/CD only for v1 storage. Win9x
+games' shared-folder use cases are rare in 1995–2001 releases.
+
+---
+
+## 6. Components We Reuse from Upstream
+
+These are *not* customization targets — QEMU already provides them and
+they work. The Win9x-side driver (when needed) is the only new code.
+
+### 6.1 Already-working-for-free
+
+| Win9x feature                  | Upstream path                            | Patch needed on QEMU? |
+|--------------------------------|------------------------------------------|-----------------------|
+| Hypervisor (Linux)             | `--enable-kvm`                           | A: no                 |
+| Hypervisor (Windows)           | `--enable-whpx`                          | A: no                 |
+| i440FX PC                      | `hw/i386/pc_piix.c`                      | A: no                 |
+| SeaBIOS / OVMF                 | `pc-bios/`                               | A: no                 |
+| VGA / SVGA / VESA              | `hw/display/vga.c`                       | A: no                 |
+| SB16 / SB Pro / ESS            | `hw/audio/sb16.c`, `es1370.c`            | A: no                 |
+| AC97 / Intel HDA               | `hw/audio/ac97.c`, `intel-hda.c`         | A: no                 |
+| OPL3 FM synthesis              | `hw/audio/adlib.c`, `fmopl.c`            | A: no                 |
+| MIDI via SoundFonts            | room of `fluidsynth` external linkage    | A: no (build only)    |
+| CD/DVD via IDE/SCSI            | `hw/ide/`, `hw/scsi/`, `block/cdrom.c`   | A: no                 |
+| Floppy via FDC                 | `hw/block/fdc.c`, `hw/isa/isa-superio.c` | A: no                 |
+| Hard disk (raw/QCOW2/VHD)      | `block/qcow2.c`, `block/vdi.c`           | A: no                 |
+| Serial-port tunnel / clipboard | `-serial` mechanism                      | A: no                 |
+| Mouse grab/release             | `-display` GTK/SDL                       | A: no                 |
+| Host networking (slirp)        | `--enable-slirp`                         | A: no                 |
+
+### 6.2 Things we'd customize QEMU-side for, considered and rejected
+
+| Candidate                                                     | Reason rejected                                                                                                                                                                                                                                                                    |
+|---------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **virtio-gpu 3D for Glide/D3D**                               | Win9x has zero virtio support. Even with `d7vk`-style rehost, the kernel driver layer is missing. We need a real PCI device, not virtio.                                                                                                                                           |
+| **virtio-snd for audio**                                      | SB16 is already supported by real Win9x drivers (PAS16, CT1350). Has 25 years of game compatibility. Reinventing this with virtio-snd risks regressions for hundreds of games.                                                                                                     |
+| **virglrenderer / rutabaga-gfx**                              | These accelerate *Linux* DRM renderers (mesa virgl, fuchsia, virtgpu). Win9x games won't go through this path.                                                                                                                                                                     |
+| **Custom Voodoo3 register-level emulator** (without paravirt) | Workable (kjliew's qemu-3dfx proves it), but allocated-chat-no-stdio approach loses quality for the small additional effort of going through our paravirt hypercall. The in-tree register-level version is still planned (§5.2.2) for guests that *don't* install our guest tools. |
+| **QEMU's existing nearest-scaler "integer mode"**             | Already exposed via `vc->gfx.scale_x/y`. Patch in §5.1.2 just changes the *default* from GL_LINEAR to GL_NEAREST.                                                                                                                                                                  |
+
+### 6.3 What we add to QEMU
+
+Patches:
+
+```
+0001-cue-bin-block-driver                — block/cue.c (T1)
+0002-nearest-scaler                      — ui/console-gl.c (T1/T2)
+0003-voodoo3-pci-device                  — hw/display/voodoo3.c (T2)
+0004-hypercall-backdoor-pci              — hw/misc/hypback.c (T2)
+0005-glide-host-renderer-vulkan          — hw/display/voodoo_renderer.c (T3)
+0006-glide-host-renderer-opengl-fallback — same file, fallback path (T3)
+```
+
+`guest-tools/` is independent of QEMU versions and has its own release
+cadence (more like vbox guest additions: tied to a specific hypercall ABI
+version, not to the underlying QEMU build).
+
+---
+
+## 7. Win9x Guest Stack — Detailed Plan
+
+### 7.1 Why DLL shims not kernel-only
+
+Win9x games from 1995–2001 use one of:
+
+| API surface            | Where it lives                                                      | Shim scheme                                                                              |
+|------------------------|---------------------------------------------------------------------|------------------------------------------------------------------------------------------|
+| Glide3x                | `glide3x.dll`, `glide2x.dll`                                        | Replace these files in `C:\WINDOWS\SYSTEM\` (or in the game's folder with search order). |
+| DirectDraw             | `ddraw.dll`                                                         | Same. Game loads `ddraw.dll`, gets our shim, our shim forwards to VxD for hypercalls.    |
+| Direct3D 5/6/7         | `d3d.dll`, `d3dim.dll` (D3D5), `d3d6.dll` (D3D6), `d3d7.dll` (D3D7) | Same.                                                                                    |
+| VBE linear framebuffer | Game's own VESA wrapper                                             | No shim needed; game writes to VGA MMIO/VRAM directly. QEMU's VGA device catches it.     |
+| WinG                   | `wing32.dll`                                                        | Tiny, just forwards to GDI; skip for v1.                                                 |
+
+The DLL shim pattern is identical to what **dgVoodoo** and **nGlide** have shipped since 2002, so the prior art is solid.
+
+### 7.2 Why a VxD
+
+Win9x ring-0 architecture is VxD (Virtual xDevice). The VxD:
+
+- Owns the MMIO mapping for the HYP_DOORBELL BAR.
+- Provides an exported interface (named service) for ring-3 DLLs.
+- Sets up DMA-shared pages (the guest-controlled DMA heap at 0x1000
+  offset in the BAR) and tells QEMU via HYP_SETUP.
+- Handles the IRQ completion path from QEMU's side (currently simulated;
+  QEMU doesn't actually raise an IRQ — it just anoints the doorbell,
+  ring-3 polls for completion, or the VxD schedules an event).
+
+VxD for Windows 9x **only**: works on 95, 95 OSR2, 98, 98SE, ME. We do not
+target WinME (last version) for stable VxD support; we don't target
+WinNT4 or Win2k (different VM, different driver format).
+
+> Important: a Win98 SE VxD ≥ version 4.10.2222 ≥ 1999 ¾ ; that's the
+> bar. Anything older than 95 OSR2 lacks the relevant protection model.
+
+### 7.3 Hypcall ABI Versioning
+
+To keep QEMU and Win9x tools decoupled:
+
+```
+#define HYP_ABI_VERSION  1
+```
+
+First feature byte in the doorbell header is the ABI version. Mismatch
+yields a VxD-side error + ring-3 fallback to upstream sine qua non
+behaviour (the game doesn't crash, it just loses hardware acceleration).
+
+Once we ship v1, never bump without a graceful fallback path.
+
+### 7.4 Win9x-specific risks
+
+- **Cache coherence:** Win9x is *not* NT. There is no `KeFlushIoBuffers`
+  equivalent. The ring-3 → ring-0 transition itself triggers cache flush
+  on older x86. Count on it, don't try to be clever.
+- **No preemption at ring-0:** A buggy VxD will hang the kernel. Be
+  defensive in VxD code.
+- **VxD load order:** Explicitly declare `VxD = "StaticVxD"` in
+  `SYSTEM.INI` so we load before Microsoft's `*PNP0410` chain and can
+  grab ports early. (Pattern: similar to `MTRR` VxD ordering.)
+- **Installer privilege:** Standard users from 1995 era didn't have
+  admin. The NSIS installer must request admin elevation on Win98SE+
+  via the LUA shim.
+
+### 7.5 D3D: the unfinished road
+
+We do not have a v1 plan for D3D5/6/7 paravirt beyond:
+
+> "We ship glide3x + ddraw-only for v1. We attempt Mesa9x partnership
+> for v2 D3D5/6. D3D7 remains an open R&D line."
+
+Documenting this as "deferred" is honest and avoids committing to
+something that won't happen.
+
+---
+
+## 8. Action Items (Prioritized)
+
+In rough order of when to tackle them. Each item has a tier (§5) and
+an estimate of self-contained scope.
+
+### Now
+- [x] **Set up repo skeleton** (1 hour)
+- [x] **Clone QEMU source** to a specific upstream tag (whichever is convenient — pick recent stable; not a 130k-behind master). (15 min)
+- [x] **Run `./configure`** (§3.1) to confirm dev libs are present on host. (30 min)
+- [x] **Make and run** `qemu-system-i386 -M pc -cdrom ...` to confirm baseline build works. (1 hour)
+
+### Week 1–2 — Tier 1
+- [ ] **T1.1**: implement CUE/BIN block driver (§5.1.1). Add test under `tests/qemu-iotests/`. (1–2 days)
+- [ ] **T1.2**: implement nearest-neighbor scaler patch (§5.1.2). (½ day)
+
+### Week 2–4 — Tier 2
+- [ ] **T2.1**: hypback PCI device in QEMU (§5.2.1). (2 days)
+- [ ] **T2.2**: Win9x VxD guest driver (§5.3.2). (3–5 days, mostly MASM)
+- [ ] **T2.3**: Voodoo3 PCI register-level emulation (optional — only needed if shipping it without guest tools). (1 week)
+
+### Week 4–8 — Tier 3
+- [ ] **T3.1**: glide3x-shim DLL replacement in `guest-tools/glide3x-shim/`. (2 weeks)
+- [ ] **T3.2**: ddraw-shim DLL replacement. (3 days)
+- [ ] **T3.3**: glide3x-shim smoke test against `qemu-3dfx` (already branches of a real-World GLQuake test). Use as reference for regression. (1 week)
+- [ ] **T3.4**: Vulkan host renderer. (2 weeks)
+
+### Post-launch (v2)
+- [ ] **P1**: pre-built guest tools installer (NSIS). Auto-update channel tied to ABI version.
+- [ ] **P2**: shared folders via lib9p + Win9x client.
+- [ ] **P3**: clipboard hypercall channel.
+- [ ] **P4**: D3D5/6 path via Mesa9x.
+- [ ] **P5**: 9p shared-folder client.
+
+### Stretch goals
+- [ ] **S1**: Wine-on-Win9x allowlist (games known to work).
+- [ ] **S2**: Linux distro (Gentoo 9x, FreeDOS, WinME) install scripts.
+- [ ] **S3**: docker-compose-style orchestration for multi-VM test runners.
+
+---
+
+## 9. Open Questions / Deferred Decisions
+
+These came up during discussion but we don't have a definitive answer yet.
+Each should be re-visited at the indicated milestone.
+
+| #   | Question                                                                                         | Resolution point  | Default if undecided                                     |
+|-----|--------------------------------------------------------------------------------------------------|-------------------|----------------------------------------------------------|
+| Q1  | Should the host renderer be Vulkan-only with OpenGL as fallback, or a runtime choice?            | T3.4              | Vulkan tier-one, OpenGL fallback.                        |
+| Q2  | Should the parent repo expose `qemu-system-i386` as a Docker image?                              | Post-launch       | Build scripts yes, container story no.                   |
+| Q3  | WinME support — does it work like Win98SE or has weird breakage?                                 | T2.2              | Treat as 98SE; revisit if user reports install failures. |
+| Q4  | SoundFonts: static file at build time or hot-loadable?                                           | T2.2              | Hot-loadable via FluidSynth `--soundfont`.               |
+| Q5  | i386-only vs i386+x86_64 binaries?                                                               | Now               | Build both; ship i386-primary.                           |
+| Q6  | Should we sign guest DLLs at install time?                                                       | Post-launch       | Yes, code-signing for Win98SE+ LUA.                      |
+| Q7  | Hypercall ABI level bumps backward-compatibly?                                                   | After v1 freeze   | Strictly backward compat until v3.                       |
+| Q8  | Should Win9x's VESA framebuffer still go through QEMU's `vga.c`, or pass through to voodoo3 too? | T2.3              | Default yes (vga.c upstream).                            |
+| Q9  | Do we need to ship our own SeaBIOS patch, e.g., for early USB?                                   | Now               | No, unless USB sticks fail to enumerate.                 |
+| Q10 | What to do about `d7vk` retries of Win9x compatibility?                                          | Strictly deferred | Don't try; go Mesa9x route.                              |
+
+---
+
+## 10. References & Prior Art
+
+### Upstream QEMU references
+- `README.rst` — overall build.
+- `configure` — flag inventory (this file's source of truth).
+- `meson_options.txt` — fine-grained knobs.
+- `hw/Kconfig`, `hw/display/Kconfig`, `hw/audio/Kconfig` — device selection mechanism.
+- `hw/i386/pc_piix.c` — the i440FX machine.
+- `block/vvfat.c`, `block/dmg.c` — block driver patterns.
+- `hw/audio/sb16.c`, `hw/audio/es1370.c`, `hw/audio/adlib.c` — sound.
+- `hw/display/vmware_vga.c` — register-level PCI VGA. Template for Voodoo3 (§5.2.2).
+- `hw/misc/edu.c`, `hw/misc/ivshmem-pci.c` — backdoor-pci patterns.
+- `ui/console-gl.c`, `ui/gtk-egl.c` — display scaler / GL surface.
+
+### Historical forks / patches we are standing on
+- **kjliew/qemu** — original "qemu-3dfx" patch, register-level Voodoo3. Reference for the §5.2.2 register-level emulator.
+- **qemu-3dfx / qemu-voodoo-3** — fork branches based on kjliew's work.
+
+### Glide / D3D / Win9x guest tooling
+- **3dfx Interactive Glide3x SDK** — official public spec source.
+- **Danaozhong/3dfx-Glide-API** — clean-room rehost of the Glide3 SDK headers & source. Confirmed via web research: this is the *SDK* (the C-callable glue), not a hypercall shim. We use these headers for our shim. Available at <https://github.com/Danaozhong/3dfx-Glide-API>.
+- **nGlide** — small, proprietary. Glide→D3D9 wrapper. Architecturally identical to our hypercall wrapper but renders locally instead of forwarding to host. Useful pattern reference for shim design.
+- **dgVoodoo** — Glide + DDraw → D3D wrapper. Open-source. **Best** open reference for what our shim's control-flow should look like.
+- **OpenGlide9X** — Glide → OpenGL. Useful for OpenGL fallback paths.
+
+### Direct3D translation
+- **d7vk** — D3D7 → Vulkan. Ring-3 only, Windows (≥XP). Cannot port to Win9x directly. Mentioned in §5.5, NOT a v1 dependency.
+- **Mesa9x** — Mesa3D fork that builds natively on Win9x. Most likely path to D3D5/6 coverage in our v2.
+
+### Shared folders / 9P
+- QEMU `hw/9pfs/`, `hw/virtio/virtio-9p-pci.c`, `hw/virtio/virtio-9p-device.c`.
+- kernel.org 9P docs (`Documentation/filesystems/9p.rst`).
+- lib9p / 9pfs libraries.
+
+### Win9x kernel/driver-level references
+- **vmdisp9x** — closest prior-art blueprint: kernel-mode video driver on Win9x exposing new surfaces into the GDI/Display apis. The architectural shape of `guest-tools/vxd/` mirrors it.
+- **SoftGPU** — software-only Win9x GDI/D3D replacement; no hypercalls but instructive VxD loading patterns.
+- **Mesa9x** — see above.
+- Walter Oney's "Windows 95 System Programming Secrets" — VxD reference.
+- Microsoft MSDN VxD DDK documentation (archived).
+
+---
+
+## 11. Glossary
+
+| Term                                       | Definition                                                                                                                                                                                 |
+|--------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Paravirtual**                            | OS-level cooperation with the hypervisor. We expose a special device that the *guest OS knows about* and talks to deliberately, replacing an existing (but working slowly) emulation path. |
+| **Hypercalls (our definition)**            | A guest-to-host control-flow that works as: DLL → VxD → MMIO poke → QEMU trap. On VMX/SVM it's a real "hypercall" instruction; on TCG it's a memory-mapped I/O exit. We use the latter.    |
+| **VxD**                                    | Win9x ring-0 driver format (.VXD). Wins on Win95/98/ME only. Lost to .SYS / WDM on NT and later.                                                                                           |
+| **Shim**                                   | In our parlance: a ring-3 Win9x DLL that *replaces* the system DLL of the same name and forwards calls into the VxD. e.g., `glide3x-shim.dll` registered as the system's `glide3x.dll`.    |
+| **i440FX**                                 | Intel 440FX PCI chipset. Emulated by `hw/i386/pc_piix.c`. The default QEMU x86 PC machine type. Pairs with PIIX3/PIIX4 southbridge for IDE, USB, ACPI.                                     |
+| **HDA**                                    | Intel High Definition Audio. Emulated by `hw/audio/intel-hda.c`. Newer-Win9x audio option. Most Win9x-era games are SB16-targeted.                                                         |
+| **DMA heap**                               | A sub-region of guest physical memory and/or BAR space that both QEMU and the guest can read/write directly without VM exits.                                                              |
+| **Doorbell**                               | A single MMIO register in the BAR that rings whenever the guest wants QEMU attention.                                                                                                      |
+| **Fence**                                  | A 64-bit monotonic counter incremented on every host-side completion. Guest ring-0 polls it to detect when a hypercall returns.                                                            |
+| **KVM**                                    | Linux kernel-mode hypervisor. QEMU talks to it via `/dev/kvm`. Auto-detected.                                                                                                              |
+| **WHPX**                                   | Windows Hypervisor Platform. QEMU auto-detects on Win10/11 hosts.                                                                                                                          |
+| **TCG**                                    | QEMU's "Tiny Code Generator": pure-software dynamic translation mode. Used when KVM is unavailable. Less performant than KVM/WHPX; sufficient for Win9x but slower.                        |
+| **sm501**, **vmware-svga**, **virtio-gpu** | Other QEMU VGA-ish devices. We do not use any of these for our guest acceleration path; they're listed here only to disambiguate.                                                          |
+
+---
+
+## 12. Document Lifecycle
+
+This file should be revisited:
+
+- After each Tier is finished (update §8 with dates, fill in real PR links).
+- When a new architectural decision is made (replace the consensus in-place
+  with the new answer; mark old text with ~~strike~~ when it's instructive).
+- Before each major release (audit §5.5 / §9 for stale items).
+
+It does **not** auto-regenerate. We own it.
