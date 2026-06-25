@@ -456,6 +456,54 @@
 { 'command': 'query-fdsets', 'returns': ['FdsetInfo'] }
 
 ##
+# @x-hypback-register-handler:
+#
+# Register a test handler for the hypback PCI device.  The handler
+# stores call metadata (op, arg_count) into the device's signal
+# registers and increments the completion fence on each call.
+# Only one handler can be registered per op range.
+#
+# @op-start: first hypercall op code in the range (0x0000-0xFFFF)
+#
+# @op-end: last hypercall op code in the range (must be >= @op-start)
+#
+# Features:
+#
+# @unstable: This command is experimental, for testing hypback.
+#
+# Since: 11.1
+#
+# .. qmp-example::
+#
+#     -> { "execute": "x-hypback-register-handler",
+#          "arguments": { "op-start": 4097, "op-end": 4097 } }
+#     <- { "return": {} }
+##
+{ 'command': 'x-hypback-register-handler',
+  'data': { 'op-start': 'int', 'op-end': 'int' },
+  'features': [ 'unstable' ] }
+
+##
+# @x-hypback-unregister-handler:
+#
+# Unregister a previously registered hypback test handler.
+#
+# @op-start: start of the op range to unregister
+#
+# @op-end: end of the op range to unregister
+#
+# Features:
+#
+# @unstable: This command is experimental.
+#
+# Since: 11.1
+##
+{ 'command': 'x-hypback-unregister-handler',
+  'data': { 'op-start': 'int', 'op-end': 'int' },
+  'features': [ 'unstable' ] }
+
+
+##
 # @CommandLineParameterType:
 #
 # Possible types for an option parameter.

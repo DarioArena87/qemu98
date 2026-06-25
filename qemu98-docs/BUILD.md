@@ -309,7 +309,18 @@ firmware-tree locations in this repo.
 If you see QEMU exit immediately with a missing-firmware error, or never
 print the SeaBIOS banner, the build is broken — see §5.
 
-### 4.6 Boot with a real Win9x guest
+### 4.7 Hypback PCI device
+
+```bash
+cd build
+./qemu-system-i386 -device help 2>&1 | grep hypback
+# Expected: name "hypback", bus PCI
+```
+
+Full verification: `qemu98-docs/HYPBACK.md` and the qtest at
+`tests/qtest/hypback-test.c`.
+
+### 4.8 Boot with a real Win9x guest
 
 Once §4.5 passes, you have a binary capable of *running* Windows 9x. To
 actually boot one, attach a disk image containing a Win9x installation
@@ -437,14 +448,58 @@ this fork:
   enumerates the standard IDE / FDC / CD-ROM boot devices. This is the
   exact hardware configuration Windows 95/98/ME expects to find at POST.
 
-This is our **Phase-0 baseline**. Anything that changes this list of
+- ✅ The hypback PCI device is compiled in ("hypback" in `-device help`) and
+  passes its qtest suite (MMIO reads/writes, doorbell dispatch, fence counter).
+
+This is our **Tier-1+2 baseline**. Anything that changes this list of
 "working" items is a regression; anything that adds to it is a feature
 implementation.
 
 ---
 
-## 7. Where to go next
+## 7. Tier 2 Verification
+
+### 7.0 Hypback PCI device smoke test
+
+This proves the hypercall backdoor PCI device is compiled in and its BAR0
+MMIO region is accessible:
+
+```bash
+cd build
+
+# Verify device is available
+./qemu-system-i386 -device help 2>&1 | grep hypback
+# Expected: name "hypback", bus PCI
+
+# Verify device enumerates on PCI bus and BAR0 is accessible (qtest)
+make check-qtest-i386 2>&1 | grep -E 'hypback|qtest-i386'
+# Expected: hypback-test passes with OK
+
+# Manual smoke: start QEMU with hypback, verify no crash
+./qemu-system-i386 -device hypback,id=hbe0 -M pc -m 16 \
+    -display none -nographic 2>&1 &
+QEMU_PID=$!
+sleep 2
+kill $QEMU_PID 2>/dev/null; wait $QEMU_PID 2>/dev/null
+# Expected: QEMU starts silently, exits on kill with signal
+```
+
+**What the hypback qtest verifies:**
+- Device discovery: finds hypback at PCI slot 0x04, confirms vendor 0x1234
+- BAR0 mapping: MMIO region is 64 KiB and accessible
+- DW0/DW1 read/write: doorbell registers work
+- Argument region: writing and reading back 64-bit args at all 32 slots
+- Sub-4-byte rejection: reads/writes smaller than 4 bytes are rejected
+- Signal registers: guest_signal is RW, host_signal is RO
+- Fence: initial value is 0, readable at both 0x0200 (4-byte) and 0x0200 (8-byte)
+- Doorbell write at DW1 offset does not crash (handler dispatch logs warning)
+
+If the hypback test fails, check that `CONFIG_HYPBACK` is enabled in Kconfig
+and that `hw/misc/hypback.c` is compiled (verify via `build/config-host.mak`).
+
+---
+
+## 8. Where to go next
 
 Once the baseline is green, move on to the implementation roadmap in
-`WIN9X_QEMU_PLAN.md` §5 §8. Tier 1 feature (nearest-neighbor scaler) is the smallest scope and
-the natural next self-contained patch (CUE/BIN is already done — see §4.4).
+`WIN9X_QEMU_PLAN.md` §5. Tier 2 feature (Win9x VxD guest driver).

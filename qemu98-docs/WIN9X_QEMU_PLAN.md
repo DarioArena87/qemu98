@@ -454,24 +454,81 @@ cd build
 
 ### 5.2 Tier 2 — Medium scope
 
-#### 5.2.1 Hypercall backdoor PCI device
+#### 5.2.1 Hypercall backdoor PCI device ✅ IMPLEMENTED
 
-Pattern reference: `hw/misc/edu.c` (Educational Device, single PCI BAR
-used as scratch + command queue) and `hw/misc/pvpanic-pci.c` (single
-device, single function, MMIO poke semantics).
+> **Status:** Complete — available as of T2.1 build.
 
-QEMU-side device lives in `hw/misc/hypback.c`:
+A PCI device that provides a 64K MMIO BAR through which a Win9x guest VxD
+can issue hypercalls to the QEMU host. The guest populates arguments in
+BAR0 and writes the doorbell (offset 0x0004) to trigger dispatch to
+registered QEMU-side handlers.
 
+**PCI identity:** vendor 0x1234 (QEMU), device 0xbeef, class `PCI_CLASS_OTHERS`
+
+**BAR0 layout (64 KiB):**
+
+| Offset   | Size       | Register       | Access | Description                                                  |
+|----------|------------|----------------|--------|--------------------------------------------------------------|
+| `0x0000` | 4 bytes    | `DW0`          | RW     | op[15:0] \| len[31:16]                                       |
+| `0x0004` | 4 bytes    | `DW1`          | RW     | arg_count \| flags \| abi_version — **write rings doorbell** |
+| `0x0008` | 256 bytes  | `args[0..31]`  | RW     | 32 × 64-bit hypercall arguments                              |
+| `0x0108` | 4 bytes    | `guest_signal` | RW     | Guest→host signal mask                                       |
+| `0x010C` | 4 bytes    | `host_signal`  | RO     | Host→guest signal mask                                       |
+| `0x0200` | 8 bytes    | `fence`        | RO     | 64-bit monotonic completion counter                          |
+| `0x0208` | 3072 bytes | `log_ring[96]` | —      | Reserved for future (96×32B entries)                         |
+| `0x1000` | 48 KiB     | DMA heap       | —      | Guest-controlled (not managed by dev)                        |
+
+**Features:**
+- **Two-step doorbell:** guest writes DW0 (op + len), then DW1 (args + flags) to ring
+- **Handler registry:** QEMU modules register for op code ranges via `hypback_register_handler()`
+- **Fence completion:** 64-bit atomic counter incremented by handlers; guest polls via MMIO read
+- **Sub-8-byte access:** argument region supports 4-byte and 8-byte read/write with proper masking
+- **Signal masks:** bidirectional signaling between guest and future host-side services
+- **ABI versioning:** DW1 byte 0 carries `HYP_ABI_VERSION` (currently 1)
+- **No interrupt:** guest polls fence for completion (simpler, avoids legacy PCI IRQ routing on Win9x)
+
+**Usage:**
+```bash
+qemu-system-i386 -device hypback,id=hbe0
+# Inside guest: lspci -nn shows 1234:beef "Class 00ff: 1234:beef"
+# Guest VxD maps BAR0 (64K MMIO), writes hypercall packets, polls fence
 ```
-$ qemu-system-i386 -device hypback,id=hbe0
-$ lspci -nn (from inside guest) shows 1234:beef "Win9x HypBack Device"
-$ guest ring-0 driver maps BAR0 (64K MMIO)
-$ guest writes a hypercall packet (header + args) at BAR0+offset
-$ QEMU picks it up via memory_region_io_ops
-$ QEMU dispatches to registered handler (Glide, D3D, FS, …)
+
+**Handler registration API (for QEMU-side consumers):**
+```c
+#include "hw/misc/hypback.h"
+
+/* Handler: called when guest writes doorbell with op in [start, end] */
+void my_handler(void *opaque, uint32_t op, uint32_t arg_count,
+                const uint64_t *args, uint64_t *fence);
+
+/* Register during module init */
+hypback_register_handler(HYP_GLIDE_TEX_UPLOAD, HYP_GLIDE_BUFFER_SWAP,
+                         my_handler, my_state);
 ```
 
-The ring-0 Win9x VxD layer lives in `guest-tools/vxd/`.
+**Files modified:**
+
+| File                         | Change                                                        |
+|------------------------------|---------------------------------------------------------------|
+| `include/hw/misc/hypback.h`  | New file — hypercall ABI, op codes, handler registration API  |
+| `hw/misc/hypback.c`          | New file — PCI device, MMIO BAR, doorbell dispatch (~260 LOC) |
+| `hw/misc/meson.build`        | Added `hypback.c` under `CONFIG_HYPBACK`                      |
+| `hw/misc/Kconfig`            | Added `HYPBACK` config entry (`default y if PCI_DEVICES`)     |
+| `tests/qtest/hypback-test.c` | New file — qtest for MMIO read/write verification             |
+| `tests/qtest/meson.build`    | Added `hypback-test` to i386/x86_64 test suites               |
+
+**Pattern reference:** `hw/misc/edu.c` (single BAR MMIO doorbell)
+
+**Future consumers of this device:**
+- §5.2.2 (Voodoo3): registers for `HYP_GLIDE_*` op codes (0x1001–0x1004) to receive 3D commands
+- §5.3.1 (guest-tools/vxd/): guest-side VxD is the *sole writer* of the doorbell
+- §5.4 (renderer): registers for `HYP_GLIDE_*` / `HYP_D3D_*` to do host-side GPU rendering
+- §5.6.1 (clipboard): registers for `HYP_CLIPBOARD_*` (0x4001–0x4002)
+- §5.6.2 (shared folders): registers for `HYP_FS_*` (0x3001–0x3005)
+- Audio: registers for `HYP_AUDIO_*` (0x5001–0x5002)
+
+Full reference: `qemu98-docs/HYPBACK.md`
 
 #### 5.2.2 Voodoo3 PCI device (register-level)
 
@@ -676,9 +733,9 @@ Patches:
 
 ```
 0001-cue-bin-block-driver                — block/cue.c (T1)  ✅ IMPLEMENTED
-0002-nearest-scaler                      — ui/console-gl.c (T1/T2)
-0003-voodoo3-pci-device                  — hw/display/voodoo3.c (T2)
-0004-hypercall-backdoor-pci              — hw/misc/hypback.c (T2)
+0002-nearest-scaler                      — ui/console-gl.c (T1/T2) ✅ IMPLEMENTED
+0003-hypercall-backdoor-pci              — hw/misc/hypback.c (T2) ✅ IMPLEMENTED
+0004-voodoo3-pci-device                  — hw/display/voodoo3.c (T2)
 0005-glide-host-renderer-vulkan          — hw/display/voodoo_renderer.c (T3)
 0006-glide-host-renderer-opengl-fallback — same file, fallback path (T3)
 `manager/`                               — QEMU98 Manager GTK4/Vala GUI (T0)
@@ -782,7 +839,7 @@ an estimate of self-contained scope.
   - At runtime `Ctrl+Alt+S` toggles integer ↔ fractional scaling; `Ctrl+Alt+N` toggles nearest ↔ linear filtering. Both backends supported.
 
 ### Week 2–4 — Tier 2
-- [ ] **T2.1**: hypback PCI device in QEMU (§5.2.1). (2 days)
+- [x] **T2.1**: hypback PCI device in QEMU (§5.2.1). (2 days)
 - [ ] **T2.2**: Win9x VxD guest driver (§5.3.2). (3–5 days, mostly MASM)
 - [ ] **T2.3**: Voodoo3 PCI register-level emulation (optional — only needed if shipping it without guest tools). (1 week)
 
