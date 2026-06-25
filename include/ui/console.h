@@ -381,7 +381,8 @@ void coroutine_fn qemu_console_co_wait_update(QemuConsole *con);
 bool console_gl_check_format(DisplayChangeListener *dcl,
                              pixman_format_code_t format);
 void surface_gl_create_texture(QemuGLShader *gls,
-                               DisplaySurface *surface);
+                               DisplaySurface *surface,
+                               bool nearest);
 bool surface_gl_create_texture_from_fd(DisplaySurface *surface,
                                        int fd, uint32_t *texture,
                                        uint32_t *mem_obj);
@@ -392,9 +393,12 @@ void surface_gl_render_texture(QemuGLShader *gls,
                                DisplaySurface *surface);
 void surface_gl_destroy_texture(QemuGLShader *gls,
                                DisplaySurface *surface);
+void surface_gl_update_texture_filter(DisplaySurface *surface,
+                                      bool nearest);
 void surface_gl_setup_viewport(QemuGLShader *gls,
                                DisplaySurface *surface,
-                               int ww, int wh);
+                               int ww, int wh,
+                               bool integer_scale);
 #endif
 
 typedef struct QemuDisplay QemuDisplay;

@@ -30,7 +30,7 @@ static void gtk_gl_area_set_scanout_mode(VirtualConsole *vc, bool scanout)
         egl_fb_destroy(&vc->gfx.guest_fb);
         if (vc->gfx.surface) {
             surface_gl_destroy_texture(vc->gfx.gls, vc->gfx.ds);
-            surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds);
+            surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds, vc->gfx.filter_nearest);
         }
     }
 }
@@ -115,7 +115,8 @@ void gd_gl_area_draw(VirtualConsole *vc)
         glBlitFramebuffer(0, y1, vc->gfx.w, y2,
                           wx_offset * gs, wy_offset * gs,
                           (ww - wx_offset) * gs, (wh - wy_offset) * gs,
-                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                          GL_COLOR_BUFFER_BIT,
+                          vc->gfx.filter_nearest ? GL_NEAREST : GL_LINEAR);
 #ifdef CONFIG_GBM
         if (dmabuf) {
             egl_dmabuf_create_sync(dmabuf);
@@ -137,7 +138,8 @@ void gd_gl_area_draw(VirtualConsole *vc)
     } else {
         gtk_gl_area_make_current(GTK_GL_AREA(vc->gfx.drawing_area));
 
-        surface_gl_setup_viewport(vc->gfx.gls, vc->gfx.ds, pw, ph);
+        surface_gl_setup_viewport(vc->gfx.gls, vc->gfx.ds, pw, ph, vc->gfx.scale_integer);
+        surface_gl_update_texture_filter(vc->gfx.ds, vc->gfx.filter_nearest);
         surface_gl_render_texture(vc->gfx.gls, vc->gfx.ds);
     }
 }
@@ -191,7 +193,8 @@ void gd_gl_area_refresh(DisplayChangeListener *dcl)
         gtk_gl_area_make_current(GTK_GL_AREA(vc->gfx.drawing_area));
         vc->gfx.gls = qemu_gl_init_shader();
         if (vc->gfx.ds) {
-            surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds);
+            surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds,
+                                      vc->gfx.filter_nearest);
         }
     }
 
@@ -220,7 +223,8 @@ void gd_gl_area_switch(DisplayChangeListener *dcl,
     if (vc->gfx.gls) {
         gtk_gl_area_make_current(GTK_GL_AREA(vc->gfx.drawing_area));
         surface_gl_destroy_texture(vc->gfx.gls, vc->gfx.ds);
-        surface_gl_create_texture(vc->gfx.gls, surface);
+        surface_gl_create_texture(vc->gfx.gls, surface,
+                                  vc->gfx.filter_nearest);
     }
     vc->gfx.ds = surface;
 

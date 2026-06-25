@@ -820,8 +820,15 @@ void gd_update_scale(VirtualConsole *vc, int ww, int wh, int fbw, int fbh)
     }
 
     if (vc->s->full_screen) {
-        vc->gfx.scale_x = (double)ww / fbw;
-        vc->gfx.scale_y = (double)wh / fbh;
+        double s = MIN((double)ww / fbw, (double)wh / fbh);
+        if (vc->gfx.scale_integer) {
+            s = floor(s);
+            if (s < 1.0) {
+                s = 1.0;
+            }
+        }
+        vc->gfx.scale_x = s;
+        vc->gfx.scale_y = s;
     } else if (vc->s->free_scale) {
         double sx, sy;
 
@@ -1673,6 +1680,49 @@ static void gd_menu_zoom_fit(GtkMenuItem *item, void *opaque)
     gd_update_full_redraw(vc);
 }
 
+static void gd_menu_scale_mode(GtkMenuItem *item, void *opaque)
+{
+    GtkDisplayState *s = opaque;
+    VirtualConsole *vc = gd_vc_find_current(s);
+
+    if (!vc || vc->type != GD_VC_GFX) {
+        return;
+    }
+
+    vc->gfx.scale_integer =
+        gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(s->scale_mode_item));
+
+    gd_update_windowsize(vc);
+    gd_update_full_redraw(vc);
+}
+
+static void gd_accel_scale_mode(void *opaque)
+{
+    GtkDisplayState *s = opaque;
+    gtk_menu_item_activate(GTK_MENU_ITEM(s->scale_mode_item));
+}
+
+static void gd_menu_filter_mode(GtkMenuItem *item, void *opaque)
+{
+    GtkDisplayState *s = opaque;
+    VirtualConsole *vc = gd_vc_find_current(s);
+
+    if (!vc || vc->type != GD_VC_GFX) {
+        return;
+    }
+
+    vc->gfx.filter_nearest =
+        gtk_check_menu_item_get_active(GTK_CHECK_MENU_ITEM(s->filter_mode_item));
+
+    gd_update_full_redraw(vc);
+}
+
+static void gd_accel_filter_mode(void *opaque)
+{
+    GtkDisplayState *s = opaque;
+    gtk_menu_item_activate(GTK_MENU_ITEM(s->filter_mode_item));
+}
+
 static void gd_grab_update(VirtualConsole *vc, bool kbd, bool ptr)
 {
     GdkDisplay *display = gtk_widget_get_display(vc->gfx.drawing_area);
@@ -1811,6 +1861,8 @@ static void gd_change_page(GtkNotebook *nb, gpointer arg1, guint arg2,
                                        TRUE);
     }
     gtk_widget_set_sensitive(s->grab_item, on_vga);
+    gtk_widget_set_sensitive(s->scale_mode_item, on_vga);
+    gtk_widget_set_sensitive(s->filter_mode_item, on_vga);
 #ifdef CONFIG_VTE
     gtk_widget_set_sensitive(s->copy_item, vc->type == GD_VC_VTE);
 #endif
@@ -2204,6 +2256,10 @@ static void gd_connect_signals(GtkDisplayState *s)
                      G_CALLBACK(gd_menu_zoom_fixed), s);
     g_signal_connect(s->zoom_fit_item, "activate",
                      G_CALLBACK(gd_menu_zoom_fit), s);
+    g_signal_connect(s->scale_mode_item, "activate",
+                     G_CALLBACK(gd_menu_scale_mode), s);
+    g_signal_connect(s->filter_mode_item, "activate",
+                     G_CALLBACK(gd_menu_filter_mode), s);
     g_signal_connect(s->grab_item, "activate",
                      G_CALLBACK(gd_menu_grab_input), s);
     g_signal_connect(s->notebook, "switch-page",
@@ -2282,6 +2338,8 @@ static GSList *gd_vc_gfx_init(GtkDisplayState *s, VirtualConsole *vc,
     }
     vc->gfx.scale_x = vc->gfx.preferred_scale;
     vc->gfx.scale_y = vc->gfx.preferred_scale;
+    vc->gfx.scale_integer = false;
+    vc->gfx.filter_nearest = true;
 
 #if defined(CONFIG_OPENGL)
     if (display_opengl) {
@@ -2361,6 +2419,22 @@ static GSList *gd_vc_gfx_init(GtkDisplayState *s, VirtualConsole *vc,
     if (s->opts->u.gtk.has_keep_aspect_ratio)
         s->keep_aspect_ratio = s->opts->u.gtk.keep_aspect_ratio;
 
+    if (s->opts->u.gtk.has_scale_mode) {
+        vc->gfx.scale_integer = s->opts->u.gtk.scale_mode == SCALE_MODE_INTEGER;
+        /* Sync the menu checkbox with the CLI option */
+        if (vc->gfx.scale_integer) {
+            gtk_menu_item_activate(GTK_MENU_ITEM(s->scale_mode_item));
+        }
+    }
+
+    if (s->opts->u.gtk.has_filter) {
+        vc->gfx.filter_nearest = s->opts->u.gtk.filter == FILTER_MODE_NEAREST;
+        /* Sync the menu checkbox with the CLI option */
+        if (!vc->gfx.filter_nearest) {
+            gtk_menu_item_activate(GTK_MENU_ITEM(s->filter_mode_item));
+        }
+    }
+
     for (i = 0; i < INPUT_EVENT_SLOTS_MAX; i++) {
         struct touch_slot *slot = &touch_slots[i];
         slot->tracking_id = -1;
@@ -2422,6 +2496,28 @@ static GtkWidget *gd_create_menu_view(GtkDisplayState *s, DisplayOptions *opts)
 
     s->zoom_fit_item = gtk_check_menu_item_new_with_mnemonic(_("Zoom To _Fit"));
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), s->zoom_fit_item);
+
+    separator = gtk_separator_menu_item_new();
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), separator);
+
+    s->scale_mode_item = gtk_check_menu_item_new_with_mnemonic(_("Integer _Scaling"));
+    gtk_menu_item_set_accel_path(GTK_MENU_ITEM(s->scale_mode_item),
+                                 "<QEMU>/View/Scale Mode");
+    gtk_accel_map_add_entry("<QEMU>/View/Scale Mode", GDK_KEY_s,
+                            HOTKEY_MODIFIERS);
+    gtk_accel_group_connect(s->accel_group, GDK_KEY_s, HOTKEY_MODIFIERS, 0,
+            g_cclosure_new_swap(G_CALLBACK(gd_accel_scale_mode), s, NULL));
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), s->scale_mode_item);
+
+    s->filter_mode_item = gtk_check_menu_item_new_with_mnemonic(_("Nearest-Neighbor _Filtering"));
+    gtk_check_menu_item_set_active(GTK_CHECK_MENU_ITEM(s->filter_mode_item), TRUE);
+    gtk_menu_item_set_accel_path(GTK_MENU_ITEM(s->filter_mode_item),
+                                 "<QEMU>/View/Filter Mode");
+    gtk_accel_map_add_entry("<QEMU>/View/Filter Mode", GDK_KEY_n,
+                            HOTKEY_MODIFIERS);
+    gtk_accel_group_connect(s->accel_group, GDK_KEY_n, HOTKEY_MODIFIERS, 0,
+            g_cclosure_new_swap(G_CALLBACK(gd_accel_filter_mode), s, NULL));
+    gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), s->filter_mode_item);
 
     separator = gtk_separator_menu_item_new();
     gtk_menu_shell_append(GTK_MENU_SHELL(view_menu), separator);

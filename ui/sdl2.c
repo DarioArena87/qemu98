@@ -424,6 +424,16 @@ static void handle_keydown(SDL_Event *ev)
             toggle_full_screen(scon);
             scon->gui_keysym = true;
             break;
+        case SDL_SCANCODE_S:
+            scon->scale_integer = !scon->scale_integer;
+            sdl2_redraw(scon);
+            scon->gui_keysym = true;
+            break;
+        case SDL_SCANCODE_N:
+            scon->filter_nearest = !scon->filter_nearest;
+            sdl2_redraw(scon);
+            scon->gui_keysym = true;
+            break;
         case SDL_SCANCODE_G:
             scon->gui_keysym = true;
             if (!gui_grab) {
@@ -924,6 +934,18 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
         }
     }
 
+    /*
+     * qemu98: default to nearest-neighbor for crisp pixel-perfect scaling of low-resolution Win9x guests.
+     */
+    bool scale_integer_default = false;
+    bool filter_nearest_default = true;
+    if (o->u.sdl.has_scale_mode) {
+        scale_integer_default = o->u.sdl.scale_mode == SCALE_MODE_INTEGER;
+    }
+    if (o->u.sdl.has_filter) {
+        filter_nearest_default = o->u.sdl.filter == FILTER_MODE_NEAREST;
+    }
+
     for (i = 0;; i++) {
         QemuConsole *con = qemu_console_lookup_by_index(i);
         if (!con) {
@@ -945,6 +967,8 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
         }
         sdl2_console[i].idx = i;
         sdl2_console[i].opts = o;
+        sdl2_console[i].scale_integer = scale_integer_default;
+        sdl2_console[i].filter_nearest = filter_nearest_default;
 #ifdef CONFIG_OPENGL
         sdl2_console[i].opengl = display_opengl;
         sdl2_console[i].dgc.ops = display_opengl ? &gl_ctx_ops : NULL;

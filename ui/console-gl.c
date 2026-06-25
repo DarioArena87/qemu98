@@ -65,7 +65,8 @@ bool console_gl_check_format(DisplayChangeListener *dcl,
 }
 
 void surface_gl_create_texture(QemuGLShader *gls,
-                               DisplaySurface *surface)
+                               DisplaySurface *surface,
+                               bool nearest)
 {
     GLenum glformat;
     GLenum gltype;
@@ -76,6 +77,8 @@ void surface_gl_create_texture(QemuGLShader *gls,
     if (surface->texture) {
         return;
     }
+
+    GLint filter = nearest ? GL_NEAREST : GL_LINEAR;
 
     assert(map_format(surface_format(surface), &glformat, &gltype));
     glGenTextures(1, &surface->texture);
@@ -94,8 +97,8 @@ void surface_gl_create_texture(QemuGLShader *gls,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ONE);
     }
 
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
 }
 
 bool surface_gl_create_texture_from_fd(DisplaySurface *surface,
@@ -188,25 +191,62 @@ void surface_gl_destroy_texture(QemuGLShader *gls,
     surface->texture = 0;
 }
 
+void surface_gl_update_texture_filter(DisplaySurface* surface, bool nearest) {
+    if (!surface || !surface->texture) {
+        return;
+    }
+
+    GLint filter = nearest ? GL_NEAREST : GL_LINEAR;
+    glBindTexture(GL_TEXTURE_2D, surface->texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+}
+
 void surface_gl_setup_viewport(QemuGLShader *gls,
                                DisplaySurface *surface,
-                               int ww, int wh)
+                               const int ww, const int wh,
+                               bool integer_scale)
 {
     int gw, gh, stripe;
-    float sw, sh;
 
     assert(gls);
 
     gw = surface_width(surface);
     gh = surface_height(surface);
 
-    sw = (float)ww/gw;
-    sh = (float)wh/gh;
-    if (sw < sh) {
-        stripe = wh - wh*sw/sh;
-        glViewport(0, stripe / 2, ww, wh - stripe);
-    } else {
-        stripe = ww - ww*sh/sw;
-        glViewport(stripe / 2, 0, ww - stripe, wh);
+    if (integer_scale) {
+        int sw = ww / gw;
+        if (sw < 1) sw = 1;
+
+        int sh = wh / gh;
+        if (sh < 1) sh = 1;
+
+        if (sw < sh) {
+            int h_stripe = ww - gw * sw;
+            int v_stripe = wh - gh * sw;
+            if (h_stripe < 0) h_stripe = 0;
+            if (v_stripe < 0) v_stripe = 0;
+            glViewport(h_stripe / 2, v_stripe / 2, gw * sw, gh * sw);
+        }
+        else {
+            int h_stripe = ww - gw * sh;
+            int v_stripe = wh - gh * sh;
+            if (h_stripe < 0) h_stripe = 0;
+            if (v_stripe < 0) v_stripe = 0;
+            glViewport(h_stripe / 2, v_stripe / 2, gw * sh, gh * sh);
+        }
+    }
+    else {
+        float sw, sh;
+
+        sw = (float)ww / gw;
+        sh = (float)wh / gh;
+        if (sw < sh) {
+            stripe = wh - wh * sw / sh;
+            glViewport(0, stripe / 2, ww, wh - stripe);
+        } else {
+            stripe = ww - ww * sh / sw;
+            glViewport(stripe / 2, 0, ww - stripe, wh);
+        }
     }
 }

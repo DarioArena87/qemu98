@@ -43,6 +43,8 @@ struct sdl2_console {
     int idle_counter;
     int ignore_hotkeys;
     bool gui_keysym;
+    bool scale_integer;
+    bool filter_nearest;
     SDL_GLContext winctx;
     QKbdState *kbd;
     bool has_dmabuf;

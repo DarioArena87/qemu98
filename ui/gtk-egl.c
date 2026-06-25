@@ -37,7 +37,7 @@ static void gtk_egl_set_scanout_mode(VirtualConsole *vc, bool scanout)
         egl_fb_destroy(&vc->gfx.guest_fb);
         if (vc->gfx.surface) {
             surface_gl_destroy_texture(vc->gfx.gls, vc->gfx.ds);
-            surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds);
+            surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds, vc->gfx.filter_nearest);
         }
     }
 }
@@ -115,7 +115,8 @@ void gd_egl_draw(VirtualConsole *vc)
         eglMakeCurrent(qemu_egl_display, vc->gfx.esurface,
                        vc->gfx.esurface, vc->gfx.ectx);
 
-        surface_gl_setup_viewport(vc->gfx.gls, vc->gfx.ds, pw, ph);
+        surface_gl_setup_viewport(vc->gfx.gls, vc->gfx.ds, pw, ph, vc->gfx.scale_integer);
+        surface_gl_update_texture_filter(vc->gfx.ds, vc->gfx.filter_nearest);
         surface_gl_render_texture(vc->gfx.gls, vc->gfx.ds);
 
         eglSwapBuffers(qemu_egl_display, vc->gfx.esurface);
@@ -160,7 +161,7 @@ void gd_egl_refresh(DisplayChangeListener *dcl)
         vc->gfx.gls = qemu_gl_init_shader();
         if (vc->gfx.ds) {
             surface_gl_destroy_texture(vc->gfx.gls, vc->gfx.ds);
-            surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds);
+            surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds, vc->gfx.filter_nearest);
         }
 #ifdef CONFIG_GBM
         if (vc->gfx.guest_fb.dmabuf) {
@@ -203,7 +204,7 @@ void gd_egl_switch(DisplayChangeListener *dcl,
     surface_gl_destroy_texture(vc->gfx.gls, vc->gfx.ds);
     vc->gfx.ds = surface;
     if (vc->gfx.gls) {
-        surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds);
+        surface_gl_create_texture(vc->gfx.gls, vc->gfx.ds, vc->gfx.filter_nearest);
     }
 
     if (resized) {

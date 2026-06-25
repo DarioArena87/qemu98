@@ -1315,6 +1315,38 @@
             'events' : [ 'InputEvent' ] } }
 
 ##
+# @ScaleMode:
+#
+# Window scaling mode for display backends.
+#
+# @fractional: Fill the window exactly, using fractional scale
+#     factors (default).
+#
+# @integer: Use whole-number multipliers only, preserving integer
+#     pixel ratios.  Letterboxes/pillarboxes the remainder.
+#     Best for low-resolution retro/guest content.
+#
+# Since: 11.1
+##
+{ 'enum'    : 'ScaleMode',
+  'data'    : [ 'fractional', 'integer' ] }
+
+##
+# @FilterMode:
+#
+# Texture filtering mode for display backends.
+#
+# @nearest: Nearest-neighbor filtering.  Sharp pixel edges.  Best
+#     for low-resolution retro/guest content (default).
+#
+# @linear: Bilinear filtering.  Smooth interpolation.
+#
+# Since: 11.1
+##
+{ 'enum'    : 'FilterMode',
+  'data'    : [ 'nearest', 'linear' ] }
+
+##
 # @DisplayGTK:
 #
 # GTK display options.
@@ -1344,6 +1376,14 @@
 # @scale: Set preferred scale of the display.  Defaults to 1.0.
 #     (Since 10.1)
 #
+# @scale-mode: Scaling mode.  'fractional' fills the window exactly;
+#     'integer' uses whole-number multipliers with letterboxing.
+#     Defaults to 'fractional'.  (Since 11.1)
+#
+# @filter: Texture filter mode.  'nearest' gives crisp pixel edges;
+#     'linear' gives smooth bilinear interpolation.  Defaults to
+#     'nearest'.  (Since 11.1)
+#
 # Since: 2.12
 ##
 { 'struct'  : 'DisplayGTK',
@@ -1353,7 +1393,9 @@
                 '*show-tabs'         : 'bool',
                 '*show-menubar'      : 'bool',
                 '*keep-aspect-ratio' : 'bool',
-                '*scale'             : 'number'  } }
+                '*scale'             : 'number',
+                '*scale-mode'        : 'ScaleMode',
+                '*filter'            : 'FilterMode'     } }
 
 ##
 # @DisplayEGLHeadless:
@@ -1477,10 +1519,20 @@
 # @grab-mod: Modifier keys that should be pressed together with the
 #     "G" key to release the mouse grab.
 #
+# @scale-mode: Scaling mode.  'fractional' fills the window exactly;
+#     'integer' uses whole-number multipliers with letterboxing.
+#     Defaults to 'fractional'.  (Since 11.1)
+#
+# @filter: Texture filter mode.  'nearest' gives crisp pixel edges;
+#     'linear' gives smooth bilinear interpolation.  Defaults to
+#     'nearest'.  (Since 11.1)
+#
 # Since: 7.1
 ##
 { 'struct'  : 'DisplaySDL',
-  'data'    : { '*grab-mod'   : 'HotKeyMod' } }
+  'data'    : { '*grab-mod'     : 'HotKeyMod',
+                '*scale-mode'   : 'ScaleMode',
+                '*filter'       : 'FilterMode' } }
 
 ##
 # @DisplayType:

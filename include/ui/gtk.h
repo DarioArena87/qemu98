@@ -44,6 +44,8 @@ typedef struct VirtualGfxConsole {
     double preferred_scale;
     double scale_x;
     double scale_y;
+    bool scale_integer;
+    bool filter_nearest;
 #if defined(CONFIG_OPENGL)
     QemuGLShader *gls;
     EGLContext ectx;
@@ -115,6 +117,8 @@ struct GtkDisplayState {
     GtkWidget *zoom_out_item;
     GtkWidget *zoom_fixed_item;
     GtkWidget *zoom_fit_item;
+    GtkWidget *scale_mode_item;
+    GtkWidget *filter_mode_item;
     GtkWidget *grab_item;
     GtkWidget *grab_on_hover_item;
 

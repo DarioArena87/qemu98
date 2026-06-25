@@ -342,32 +342,113 @@ qemu-io -r -f cue -c "read 0 2048" game.cue
 | `tests/qemu-iotests/315.out`   | Expected output for test 315               |
 | `tests/qemu-iotests/check`     | Added `'cue'` to `format_list`             |
 
-#### 5.1.2 Nearest-neighbor scaler
+#### 5.1.2 Nearest-neighbor scaler ✅ IMPLEMENTED
 
-Why second: tiny patch (~5 lines), directly visible to users, no GPU work.
+> **Status:** Complete — available as of second build.
 
-`0002-nearest-scaler` modifies `ui/console-gl.c`:
+A user-controllable texture scaling filter that, by default, uses
+nearest-neighbor pixel-perfect scaling for low-resolution Win9x guests.
+The scaling runs entirely on the host GPU via OpenGL, freeing up CPU
+resources for the actual virtualization work. Aspect ratio is enforced
+via integer scaling (largest whole-number multiplier that fits the host
+window) with letterboxing/pillarboxing for the remainder.
 
-```diff
-@@ -120,8 +120,8 @@ void surface_gl_create_texture(...)
- {
-     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ..., GL_RGBA, GL_UNSIGNED_BYTE, NULL);
--    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
--    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
- }
+**Why:** Win9x guests run at 4:3 resolutions like 640×480 or 320×240. On
+modern 16:9 displays (1920×1080, 2560×1440) we want crisp, pixel-perfect
+scaling rather than bilinear blur. This is critical for retro games that
+use small sprites and require sharp pixel edges.
+
+**Features:**
+- **Nearest-neighbor as default** — sharp pixels, integer multipliers.
+- **Bilinear opt-in** — smooth interpolation at fractional scales, useful
+  for modern high-resolution guests (or any case where smooth scaling is
+  preferred).
+- **Integer-pixel viewport** — each host pixel maps to exactly N×N guest
+  pixels (N integer), preventing "pixel swimming" artifacts at fractional
+  scales.
+- **Aspect-ratio preserving** — fullscreen mode letterboxes/pillarboxes the
+  remainder using `MIN(scale_x, scale_y)` so 4:3 guests display correctly
+  on 16:9 hosts.
+- **GPU accelerated** — runs on the host GPU via the OpenGL texture
+  filter and viewport sizing.
+- **Two independent orthogonal options**:
+  - `scale=fractional|integer` — controls whether fullscreen fills the
+    window exactly (fractional, default) or uses whole-number multipliers
+    with letterboxing (integer).
+  - `filter=nearest|linear` — controls the GL texture filter: crisp pixel
+    edges (nearest, default) or smooth bilinear interpolation (linear).
+- **User toggleable at CLI** — no recompile needed.
+- **Runtime toggles**:
+  - `Ctrl+Alt+S` — toggle scaling mode (integer ↔ fractional)
+  - `Ctrl+Alt+N` — toggle filtering mode (nearest ↔ linear)
+  - GTK View menu: "Integer Scaling" and "Nearest-Neighbor Filtering"
+    checkboxes.
+
+**Files modified:**
+
+| File                               | Change                                                                                                                                                                                                                                                                                                                                                                                               |
+|------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `qapi/ui.json`                     | New `ScaleMode` enum (`fractional`/`integer`) and `FilterMode` enum (`nearest`/`linear`); `*scale-mode` and `*filter` fields on `DisplayGTK` and `DisplaySDL`                                                                                                                                                                                                                                        |
+| `include/ui/console.h`             | Updated prototypes of `surface_gl_create_texture()` and `surface_gl_setup_viewport()`                                                                                                                                                                                                                                                                                                                |
+| `include/ui/gtk.h`                 | Added `bool scale_integer` and `bool filter_nearest` to `VirtualGfxConsole`; added `scale_mode_item` and `filter_mode_item` to `GtkDisplayState` for independent runtime menus                                                                                                                                                                                                                       |
+| `include/ui/sdl2.h`                | Added `bool scale_integer` and `bool filter_nearest` to `struct sdl2_console`                                                                                                                                                                                                                                                                                                                        |
+| `ui/console-gl.c`                  | `surface_gl_create_texture()` now takes `bool nearest` filter parameter; `surface_gl_setup_viewport()` now takes `bool integer_scale` and selects integer-ratio or float-ratio sizing accordingly                                                                                                                                                                                                    |
+| `ui/egl-helpers.c`                 | `egl_dmabuf_import_texture()` switched to `GL_NEAREST` (matches the rest of the pipeline)                                                                                                                                                                                                                                                                                                            |
+| `ui/gtk.c`                         | `gd_vc_gfx_init()` parses `scale-mode` and `filter` options independently; `gd_update_scale()` floors scale when `scale_integer` is true; `gd_menu_scale_mode()` / `gd_accel_scale_mode()` (`Ctrl+Alt+S`) and `gd_menu_filter_mode()` / `gd_accel_filter_mode()` (`Ctrl+Alt+N`) provide independent runtime toggles via checkable menu items; `gd_change_page()` disables both items on non-GFX tabs |
+| `ui/gtk-egl.c`, `ui/gtk-gl-area.c` | `surface_gl_setup_viewport()` uses `scale_integer`; `surface_gl_create_texture()`, `surface_gl_update_texture_filter()`, and `glBlitFramebuffer` use `filter_nearest`                                                                                                                                                                                                                                |
+| `ui/sdl2.c`                        | Parses `scale-mode` and `filter` independently in `sdl2_display_init()`; `handle_keydown()` catches `SDL_SCANCODE_S` (toggle `scale_integer`) and `SDL_SCANCODE_N` (toggle `filter_nearest`) at runtime, each triggering `sdl2_redraw()`                                                                                                                                                             |
+| `ui/sdl2-gl.c`                     | `surface_gl_setup_viewport()` uses `scale_integer`; `surface_gl_create_texture()` and `surface_gl_update_texture_filter()` use `filter_nearest`                                                                                                                                                                                                                                                      |
+
+**Why integer scale + nearest-neighbor?** Using nearest-neighbor
+filtering at fractional scales (e.g. 2.25x) looks visibly bad because
+some output columns are 2 pixels wide while others are 3 pixels wide,
+producing uneven, "wavy" pixel borders. Forcing integer scales via
+`floor(MIN(ww/fbw, wh/fbh))` guarantees every guest pixel maps to
+exactly the same number of host pixels, producing crisp grid-aligned
+edges.
+
+**Usage — independent scale and filter options:**
+```bash
+# Default: fractional scaling + nearest-neighbor filter
+qemu-system-i386 -display sdl,gl=on
+
+# Integer scaling with crisp pixel edges (classic retro look)
+qemu-system-i386 -display sdl,scale-mode=integer,filter=nearest,gl=on
+
+# Fill window with smooth bilinear interpolation
+qemu-system-i386 -display sdl,scale-mode=fractional,filter=linear,gl=on
+
+# Same options work for the GTK backend
+qemu-system-i386 -display gtk,scale-mode=integer,filter=nearest,gl=on
+qemu-system-i386 -display gtk,scale-mode=fractional,filter=linear,gl=on
+
+# Runtime shortcuts:
+#   Ctrl+Alt+S  → toggle scale mode (integer ↔ fractional)
+#   Ctrl+Alt+N  → toggle filter mode (nearest ↔ linear)
+
+# Defaults applied:
+#   - Caps amplified with 3:2 letterboxing/pillarboxing
+#   - 640×480 → 1280×960 stretches with hard pixel edges (4:3 preserved)
+#   - 320×240 → 1920×1440 (single big pixel up-scaled 6×)
+#   - On 1920×1080 host: 4:3 guest centers as 1280×960 (scaled X-only to integer 2)
 ```
 
-And the integer-scale aspect ratio is enforced via `vc->gfx.scale_x/y`.
-Upstream already has an integer multiplier path; our patch hooks in there.
+**Verification:**
+```bash
+cd build
+./qemu-system-i386 --version                                         # QEMU 11.0.50
+./qemu-system-i386 -display help                                     # lists 'gtk' and 'sdl' w/ options
+./qemu-system-i386 -display gtk,scale-mode=integer,filter=linear,gl=on ... # mixed modes
+./qemu-system-i386 -display gtk,scale-mode=integer,filter=nearest,gl=on ...  # classic retro
 
-After this patch:
-- 640×480 → 1280×960 stretches with hard pixel edges (4:3 preserved).
-- 320×240 → 1920×1440 (single big pixel up-scaled 6×).
-- Hosts can still override the GL filter, but the *default for SDL/GL* is nearest.
+# At runtime (both backends):
+#   Ctrl+Alt+S  → toggle scale mode (integer ↔ fractional)
+#   Ctrl+Alt+N  → toggle filter mode (nearest ↔ linear)
+#   GTK: View → "Integer Scaling" and "Nearest-Neighbor Filtering" checkboxes
+```
+
+- The SDL backend supports these option only with gl=on
+- The GTK backend supports the nearest neighbor filter only when gl=on but scaling works regardless of the gl option being on or absent
 
 ### 5.2 Tier 2 — Medium scope
 
@@ -694,7 +775,9 @@ an estimate of self-contained scope.
 
 ### Week 1–2 — Tier 1
 - [x] **T1.1**: implement CUE/BIN block driver (§5.1.1). Add test under `tests/qemu-iotests/`. (1–2 days)
-- [ ] **T1.2**: implement nearest-neighbor scaler patch (§5.1.2). (½ day)
+- [x] **T1.2**: implement nearest-neighbor scaler patch (§5.1.2) (½ day)
+  - Independent runtime toggles for scale mode (`-display gtk,scale-mode=fractional|integer,filter=nearest|linear`) and filter mode. 
+  - At runtime `Ctrl+Alt+S` toggles integer ↔ fractional scaling; `Ctrl+Alt+N` toggles nearest ↔ linear filtering. Both backends supported.
 
 ### Week 2–4 — Tier 2
 - [ ] **T2.1**: hypback PCI device in QEMU (§5.2.1). (2 days)
