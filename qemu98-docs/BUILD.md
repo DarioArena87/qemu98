@@ -116,6 +116,7 @@ Want only the 32-bit binary (faster build, ships Win9x-only)? Drop
 ```bash
 make -j$(nproc)
 ```
+Ensure to run this command in the `build` folder created before.
 
 The single biggest wall-clock hit is the cross-arch TCG/CPU code — which is
 why `--target-list` is restricted in §2. Expect 5–20 minutes on a modern

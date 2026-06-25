@@ -170,10 +170,10 @@ all user-mode emulators. ~80% of wall-clock time is in cross-arch TCG/CPU
 code we will never need.
 
 #### Cross-platform accelerators
-- `--enable-kvm` — Linux in-kernel hypervisor. Auto-detected when `/dev/kvm`
-  exists, but explicit is clearer in a documented build. Works only on linux hosts.
-- `--enable-whpx` — Windows Hypervisor Platform. Auto-detected on Windows
-  hosts, Works only on Windows hosts.
+The accelerators should be auto-detected from the `configure` script but they can be specified if needed:
+
+- `--enable-kvm` — Linux in-kernel hypervisor. Auto-detected when `/dev/kvm` exists. Works only on Linux hosts.
+- `--enable-whpx` — Windows Hypervisor Platform. Auto-detected on Windows hosts. Works only on Windows hosts.
 
 #### Audio (low-latency, host-side accelerators)
 - `--audio-drv-list='alsa,pa,pipewire,oss,sdl'` — host backends only.
