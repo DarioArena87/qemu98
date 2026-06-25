@@ -249,7 +249,7 @@ void sdl2_gl_scanout_flush(DisplayChangeListener *dcl,
 
     SDL_GetWindowSize(scon->real_window, &ww, &wh);
     egl_fb_setup_default(&scon->win_fb, ww, wh, 0, 0);
-    egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top);
+    egl_fb_blit(&scon->win_fb, &scon->guest_fb, !scon->y0_top, scon->filter_nearest);
 
     SDL_GL_SwapWindow(scon->real_window);
 }

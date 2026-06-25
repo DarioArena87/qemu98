@@ -1188,7 +1188,7 @@ static bool spice_gl_blit_scanout_texture(SimpleSpiceDisplay *ssd)
     egl_fb_setup_for_tex(&scanout_tex_fb,
                          surface_width(ssd->ds), surface_height(ssd->ds),
                          ssd->ds->texture, false);
-    egl_fb_blit(&scanout_tex_fb, &ssd->guest_fb, false);
+    egl_fb_blit(&scanout_tex_fb, &ssd->guest_fb, false, false);
     glFlush();
     egl_fb_destroy(&scanout_tex_fb);
 

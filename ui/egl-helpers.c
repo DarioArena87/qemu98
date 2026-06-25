@@ -138,7 +138,7 @@ void egl_fb_setup_new_tex(egl_fb *fb, int width, int height)
     egl_fb_setup_for_tex(fb, width, height, texture, true);
 }
 
-void egl_fb_blit(egl_fb *dst, egl_fb *src, bool flip)
+void egl_fb_blit(egl_fb *dst, egl_fb *src, bool flip, bool nearest)
 {
     GLuint x1 = 0;
     GLuint y1 = 0;
@@ -168,7 +168,8 @@ void egl_fb_blit(egl_fb *dst, egl_fb *src, bool flip)
     glBlitFramebuffer(x1, y1, x2, y2,
                       dst->x, dst->y,
                       dst->x + dst->width, dst->y + dst->height,
-                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
+                      GL_COLOR_BUFFER_BIT,
+                      nearest ? GL_NEAREST : GL_LINEAR);
 }
 
 void egl_fb_read(DisplaySurface *dst, egl_fb *src)

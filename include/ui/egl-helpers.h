@@ -32,7 +32,7 @@ void egl_fb_setup_default(egl_fb *fb, int width, int height, int x, int y);
 void egl_fb_setup_for_tex(egl_fb *fb, int width, int height,
                           GLuint texture, bool delete);
 void egl_fb_setup_new_tex(egl_fb *fb, int width, int height);
-void egl_fb_blit(egl_fb *dst, egl_fb *src, bool flip);
+void egl_fb_blit(egl_fb *dst, egl_fb *src, bool flip, bool nearest);
 void egl_fb_read(DisplaySurface *dst, egl_fb *src);
 void egl_fb_read_rect(DisplaySurface *dst, egl_fb *src, int x, int y, int w, int h);
 
