@@ -1,6 +1,6 @@
 # HYPBACK.md — Win9x Hypercall Backdoor PCI Device
 
-> **Status:** Implemented (T2.1 ✅). Source: `hw/misc/hypback.c`, `include/hw/misc/hypback.h`.
+> **Status:** Implemented (T2.1 ✅, T2.2 ✅). Source: `hw/misc/hypback.c`, `include/hw/misc/hypback.h`.
 >
 > **Audience:** Contributors building features that use hypercalls (Voodoo3, audio,
 > clipboard, shared folders, future Glide/D3D renderers), and the Win9x VxD
@@ -14,8 +14,8 @@ The hypback device is a **PCI device with a single 64K MMIO BAR** that lets a
 Win9x guest ring-0 VxD send hypercalls to QEMU. The guest writes a hypercall
 packet (op code + arguments) into BAR0, then writes the doorbell register
 (offset 0x0004) to wake up QEMU. QEMU dispatches to the registered handler for
-that op code range, processes the work, and increments a 64-bit fence counter
-so the guest knows it's done.
+that op code range, processes the work, increments a 64-bit fence counter, and
+optionally fires an MSI interrupt so the guest knows it's done.
 
 ```
                     Guest (Win9x)                          Host (QEMU)
@@ -23,25 +23,27 @@ so the guest knows it's done.
 ring-3 game → DLL shim
                     ↓ IOCTL
 ring-0 VxD → writes BAR0 (args + op)
-          → writes DW1 @ 0x0004  ────PCI MMIO trap────→  hypback_mmio_write()
+           → writes DW1 @ 0x0004  ────PCI MMIO trap────→  hypback_mmio_write()
                                                           hypback_dispatch()
                                                             ↓
                                                           handler (Glide/D3D/FS/…)
                                                             ↓ increments fence
+                                                            ↓ msi_notify()  ←── NEW (T2.2)
                     ← polls fence @ 0x0200 ←───────────
+                    ← or MSI interrupt    ←───────────  (if available)
 ```
 
 ---
 
 ## 1. PCI Identity
 
-| Field        | Value                 | Notes                              |
-|--------------|-----------------------|------------------------------------|
-| Vendor ID    | `0x1234`              | `PCI_VENDOR_ID_QEMU`               |
-| Device ID    | `0xBEEF`              | "HypBack" — looks like `beef`      |
-| Revision     | `1`                   | Initial ABI version                |
-| Class        | `PCI_CLASS_OTHERS`    | `0xFFFF` (miscellaneous)            |
-| Subsystem    | (none)                | Single-function, no sub-vendor      |
+| Field     | Value              | Notes                          |
+|-----------|--------------------|--------------------------------|
+| Vendor ID | `0x1234`           | `PCI_VENDOR_ID_QEMU`           |
+| Device ID | `0xBEEF`           | "HypBack" — looks like `beef`  |
+| Revision  | `1`                | Initial ABI version            |
+| Class     | `PCI_CLASS_OTHERS` | `0xFFFF` (miscellaneous)       |
+| Subsystem | (none)             | Single-function, no sub-vendor |
 
 **lspci -nn output (inside guest):**
 ```
@@ -100,19 +102,19 @@ at offset 0x0008. Both 4-byte (DWORD) and 8-byte (QWORD) writes are supported.
 The device uses proper masking so a 4-byte write at offset 0x000C only updates
 bytes 4-7 of args[0], preserving bytes 0-3.
 
-| Slot  | Offset  | Access  |
-|-------|---------|---------|
-| 0     | 0x0008  | lo 4 B, hi 4 B at 0x000C |
-| 1     | 0x0010  | lo 4 B, hi 4 B at 0x0014 |
-| …     | …       | …       |
-| 31    | 0x0100  | lo 4 B, hi 4 B at 0x0104 |
+| Slot | Offset | Access                   |
+|------|--------|--------------------------|
+| 0    | 0x0008 | lo 4 B, hi 4 B at 0x000C |
+| 1    | 0x0010 | lo 4 B, hi 4 B at 0x0014 |
+| …    | …      | …                        |
+| 31   | 0x0100 | lo 4 B, hi 4 B at 0x0104 |
 
 ### 2.4 Signal Masks (0x0108, 0x010C)
 
-| Register       | Offset  | Access | Purpose                         |
-|----------------|---------|--------|---------------------------------|
-| guest_signal   | 0x0108  | RW     | Guest sets bits to signal host   |
-| host_signal    | 0x010C  | RO     | Host sets bits to signal guest   |
+| Register     | Offset | Access | Purpose                        |
+|--------------|--------|--------|--------------------------------|
+| guest_signal | 0x0108 | RW     | Guest sets bits to signal host |
+| host_signal  | 0x010C | RO     | Host sets bits to signal guest |
 
 Currently informational — future host-side services may use these for
 asynchronous event delivery.
@@ -120,7 +122,8 @@ asynchronous event delivery.
 ### 2.5 Completion Fence (0x0200)
 
 A 64-bit monotonic counter. The host handler increments it atomically after
-processing each hypercall. The guest polls this to detect completion:
+processing each hypercall. The guest can either poll this to detect completion,
+or use MSI interrupts (see §2.6).
 
 ```asm
 ; Win9x VxD pseudocode — poll fence after doorbell write
@@ -133,6 +136,26 @@ processing each hypercall. The guest polls this to detect completion:
 
 The fence starts at 0 on device reset and increments by 1 per completed call.
 Handlers should use `qatomic_inc_fetch(fence)` to increment.
+
+### 2.6 MSI Interrupt Support
+
+The hypback device now supports MSI (Message Signalled Interrupts) as an
+alternative to fence polling for hypercall completion notification.
+MSI is automatically enabled when the machine type supports it; if
+unavailable (e.g., older machine types), the device falls back to
+poll-only operation silently.
+
+- **MSI vector:** 0 (single interrupt, edge-triggered)
+- **Fired after:** handler completes and increments fence
+- **Guest-side:** The VxD driver (`guest-tools/vxd/hypback.asm`) detects
+  MSI capability via PCI capabilities walk and registers a VPICD handler.
+- **Interrupt pin:** `PCI_INTERRUPT_PIN` is set to 1 (for INTx fallback
+  when MSI is not available).
+- **64-bit MSI:** supported (4th parameter to `msi_init` is `true`).
+- **Per-vector mask:** disabled (5th parameter is `false`).
+
+The VxD checks MSI availability during `Device_Init` and uses the event-based
+path when present; otherwise it falls back to spin-with-yield fence polling.
 
 ---
 
@@ -160,6 +183,7 @@ When DW1 is written (offset 0x0004), `hypback_mmio_write` calls
 2. Iterates the global handler table (registered via `hypback_register_handler`)
 3. Calls the matching handler with `(opaque, op, arg_count, args, &fence)`
 4. The handler processes the call and increments `fence`
+5. **If MSI is enabled**, fires `msi_notify()` to interrupt the guest VxD
 
 The dispatch runs under the BQL (iothread mutex), so handlers can safely
 access QEMU state.
@@ -171,40 +195,45 @@ access QEMU state.
 Op codes are organized in ranges by subsystem:
 
 ### Glide3x (0x1000–0x1FFF)
-| Code   | Name                    | Description                         | Tier |
-|--------|-------------------------|-------------------------------------|------|
-| 0x1001 | `HYP_GLIDE_TEX_UPLOAD`  | Upload texture to host VRAM         | T3   |
-| 0x1002 | `HYP_GLIDE_TEX_SETPALETTE` | Set texture palette              | T3   |
-| 0x1003 | `HYP_GLIDE_BUFFER_SWAP` | Swap front/back buffers             | T3   |
-| 0x1004 | `HYP_GLIDE_VERTEX_SUBMIT` | Submit vertex batch              | T3   |
+
+| Code   | Name                       | Description                 | Tier |
+|--------|----------------------------|-----------------------------|------|
+| 0x1001 | `HYP_GLIDE_TEX_UPLOAD`     | Upload texture to host VRAM | T3   |
+| 0x1002 | `HYP_GLIDE_TEX_SETPALETTE` | Set texture palette         | T3   |
+| 0x1003 | `HYP_GLIDE_BUFFER_SWAP`    | Swap front/back buffers     | T3   |
+| 0x1004 | `HYP_GLIDE_VERTEX_SUBMIT`  | Submit vertex batch         | T3   |
 
 ### Direct3D (0x2000–0x2FFF)
-| Code   | Name                    | Description                         | Tier |
-|--------|-------------------------|-------------------------------------|------|
-| 0x2001 | `HYP_D3D_TEX_UPLOAD`    | Upload D3D texture                  | T3c  |
-| 0x2002 | `HYP_D3D_DRAW_PRIM`     | Draw primitive                      | T3c  |
-| 0x2003 | `HYP_D3D_PRESENT`       | Present frame                       | T3c  |
+
+| Code   | Name                 | Description        | Tier |
+|--------|----------------------|--------------------|------|
+| 0x2001 | `HYP_D3D_TEX_UPLOAD` | Upload D3D texture | T3c  |
+| 0x2002 | `HYP_D3D_DRAW_PRIM`  | Draw primitive     | T3c  |
+| 0x2003 | `HYP_D3D_PRESENT`    | Present frame      | T3c  |
 
 ### Filesystem / Shared Folders (0x3000–0x3FFF)
-| Code   | Name                    | Description                         | Tier |
-|--------|-------------------------|-------------------------------------|------|
-| 0x3001 | `HYP_FS_OPEN`           | Open file on host                   | T4   |
-| 0x3002 | `HYP_FS_READ`           | Read from host file                 | T4   |
-| 0x3003 | `HYP_FS_WRITE`          | Write to host file                  | T4   |
-| 0x3004 | `HYP_FS_CLOSE`          | Close host file                     | T4   |
-| 0x3005 | `HYP_FS_READDIR`        | Read directory listing              | T4   |
+
+| Code   | Name             | Description            | Tier |
+|--------|------------------|------------------------|------|
+| 0x3001 | `HYP_FS_OPEN`    | Open file on host      | T4   |
+| 0x3002 | `HYP_FS_READ`    | Read from host file    | T4   |
+| 0x3003 | `HYP_FS_WRITE`   | Write to host file     | T4   |
+| 0x3004 | `HYP_FS_CLOSE`   | Close host file        | T4   |
+| 0x3005 | `HYP_FS_READDIR` | Read directory listing | T4   |
 
 ### Clipboard (0x4000–0x4FFF)
-| Code   | Name                    | Description                         | Tier |
-|--------|-------------------------|-------------------------------------|------|
-| 0x4001 | `HYP_CLIPBOARD_OUT`     | Copy guest clipboard to host        | T4   |
-| 0x4002 | `HYP_CLIPBOARD_IN`      | Paste host clipboard to guest       | T4   |
+
+| Code   | Name                | Description                   | Tier |
+|--------|---------------------|-------------------------------|------|
+| 0x4001 | `HYP_CLIPBOARD_OUT` | Copy guest clipboard to host  | T4   |
+| 0x4002 | `HYP_CLIPBOARD_IN`  | Paste host clipboard to guest | T4   |
 
 ### Audio (0x5000–0x5FFF)
-| Code   | Name                    | Description                         | Tier |
-|--------|-------------------------|-------------------------------------|------|
-| 0x5001 | `HYP_AUDIO_PLAY`        | Play audio buffer                   | T4   |
-| 0x5002 | `HYP_AUDIO_MIDI`        | Send MIDI event                     | T4   |
+
+| Code   | Name             | Description       | Tier |
+|--------|------------------|-------------------|------|
+| 0x5001 | `HYP_AUDIO_PLAY` | Play audio buffer | T4   |
+| 0x5002 | `HYP_AUDIO_MIDI` | Send MIDI event   | T4   |
 
 New subsystems should claim a 0x1000-aligned range and add defines to
 `include/hw/misc/hypback.h`.
@@ -263,6 +292,24 @@ static void my_module_init(void)
 
 ## 6. Usage
 
+### 6.0 Guest tools ISO
+
+The guest tools (VxD driver, test harness) are distributed as a bootable
+ISO via the `--enable-guest-tools` configure option. See `BUILD.md` §3.1
+for build requirements.
+
+```bash
+# Enable guest tools build
+../configure --enable-guest-tools
+make -j$(nproc)
+# ISO is at build/guest-tools/guest-tools.iso
+```
+
+Attach the ISO to the Win9x guest to install drivers and tests:
+```bash
+qemu-system-i386 -device hypback,id=hbe0 -cdrom build/guest-tools/guest-tools.iso
+```
+
 ### 6.1 Enable the device
 
 ```bash
@@ -290,8 +337,7 @@ qemu-system-i386 -device hypback,id=hbe0 -qmp unix:/tmp/qmp.sock,server=on,wait=
 
 # In another terminal, connect and register a handler:
 echo '{ "execute": "qmp_capabilities" }' | socat - UNIX-CONNECT:/tmp/qmp.sock
-echo '{ "execute": "x-hypback-register-handler",
-        "arguments": { "op-start": 4097, "op-end": 4097 } }' | socat - UNIX-CONNECT:/tmp/qmp.sock
+echo '{ "execute": "x-hypback-register-handler", "arguments": { "op-start": 4097, "op-end": 4097 } }' | socat - UNIX-CONNECT:/tmp/qmp.sock
 # Returns: {"return": {}}
 
 # Now any MMIO write of op 0x1001 to BAR0 will trigger the test handler
@@ -311,12 +357,18 @@ QTEST_QEMU_BINARY=./qemu-system-i386 tests/qtest/hypback-test --tap -k
 ## 7. Design Decisions
 
 ### 7.1 Why polled completion instead of IRQ?
-Win9x PCI IRQ routing through the i440FX/PIIX3 is compatible with
-standard PCI IRQs, but polling the fence is simpler for v1:
-- No need to configure IRQ routing in the VxD
-- Deterministic latency (spin until value changes)
-- Avoids legacy PIC/APIC compatibility issues across Win95/98/ME
-- Can be upgraded to IRQ later by adding MSI support
+
+~~Win9x PCI IRQ routing through the i440FX/PIIX3 is compatible with
+standard PCI IRQs, but polling the fence is simpler for v1:~~
+
+**Updated (T2.2):** MSI interrupt support is now implemented.
+The device fires an MSI after each handler completes, and the VxD
+uses event-based (MSI) completion when available. The fence polling
+path remains as a fallback for guests without MSI support.
+
+- MSI eliminates CPU spin-wasting during hypercall wait.
+- The VxD automatically detects MSI via PCI capability walk.
+- INTx fallback is available if MSI is unavailable on the machine type.
 
 ### 7.2 Why DW1 triggers the doorbell (not DW0)?
 The two-step protocol (write DW0 with op, then DW1 with args+flags) lets
@@ -333,25 +385,41 @@ offset 0x0008 and args[0].hi at offset 0x000C with natural DWORD writes,
 without needing special QWORD handling.
 
 ### 7.4 Why no interrupt pin?
-The device does not assert `PCI_INTERRUPT_PIN` — it uses polled
-completion exclusively. This avoids the complexity of legacy PCI
-interrupt routing in Win9x guest kernels, where IRQ sharing between
-devices is fragile.
+
+The device now sets `PCI_INTERRUPT_PIN = 1` (added in T2.2) for
+INTx fallback. MSI is the primary interrupt mechanism; INTx is
+the fallback when MSI is unavailable on the machine type.
+The VxD prefers MSI when detected, falling back to fence polling.
 
 ---
 
 ## 8. Files
 
-| File                              | Purpose                                              |
-|-----------------------------------|------------------------------------------------------|
-| `include/hw/misc/hypback.h`       | Hypercall ABI, op codes, handler registration API    |
-| `hw/misc/hypback.c`               | PCI device implementation (~260 LOC)                 |
-| `hw/misc/meson.build`             | Added `hypback.c` under `CONFIG_HYPBACK`              |
-| `hw/misc/Kconfig`                 | `config HYPBACK` entry (default y if PCI_DEVICES)     |
-| `tests/qtest/hypback-test.c`      | qtest: MMIO reads/writes, argument region, fence     |
-| `tests/qtest/meson.build`         | Added `hypback-test` to i386/x86_64 test suites       |
-| `qemu98-docs/WIN9X_QEMU_PLAN.md`  | §5.2.1 — design spec, §6.3 — patch list              |
-| `qemu98-docs/BUILD.md`            | §4.7 — verification, §6 — baseline items             |
+| File                                        | Purpose                                           |
+|---------------------------------------------|---------------------------------------------------|
+| `include/hw/misc/hypback.h`                 | Hypercall ABI, op codes, handler registration API |
+| `hw/misc/hypback.c`                         | PCI device implementation (~280 LOC, MSI support) |
+| `hw/misc/meson.build`                       | Added `hypback.c` under `CONFIG_HYPBACK`          |
+| `hw/misc/Kconfig`                           | `config HYPBACK` (depends on PCI + MSI_NONBROKEN) |
+| `tests/qtest/hypback-test.c`                | qtest: MMIO reads/writes, argument region, fence  |
+| `tests/qtest/meson.build`                   | Added `hypback-test` to i386/x86_64 test suites   |
+| `guest-tools/vxd/hypback.asm`               | Win9x VxD guest driver (~1050 LOC MASM)           |
+| `guest-tools/vxd/hypback.def`               | VxD export definitions                            |
+| `guest-tools/vxd/makefile`                  | Build with JWasm + MSVC Link                      |
+| `guest-tools/vxd/README.md`                 | VxD build/install/usage docs                      |
+| `guest-tools/vxd/BUILD_VXD.BAT`             | Guest-side VxD build & install script             |
+| `guest-tools/vxd/README_VXD.TXT`            | Guest-side compilation instructions               |
+| `guest-tools/vxd/tools/uasm/`               | Bundled UASM assembler (JWasm successor)          |
+| `guest-tools/test/test_hypercall.c`         | Win9x smoke test harness                          |
+| `guest-tools/test/makefile`                 | Build test harness with MinGW                     |
+| `guest-tools/build-guest-tools.sh`          | Cross-build script producing guest-tools.iso      |
+| `guest-tools/meson.build`                   | Meson integration for guest-tools ISO target      |
+| `guest-tools/README.md`                     | Guest tools overview                              |
+| `tests/guest-tools/test-guest-tools-iso.sh` | Integration test for ISO build                    |
+| `tests/guest-tools/test-vm-cdrom.sh`        | VM-level test: boots QEMU with ISO as CD-ROM      |
+| `tests/guest-tools/meson.build`             | Test wiring for guest-tools ISO verification      |
+| `qemu98-docs/WIN9X_QEMU_PLAN.md`            | §5.2.1 — design spec, §6.3 — patch list           |
+| `qemu98-docs/BUILD.md`                      | §4.7 — verification, §6 — baseline items          |
 
 ---
 

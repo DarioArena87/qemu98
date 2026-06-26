@@ -456,7 +456,7 @@ cd build
 
 #### 5.2.1 Hypercall backdoor PCI device ✅ IMPLEMENTED
 
-> **Status:** Complete — available as of T2.1 build.
+> **Status:** Complete — available as of T2.1 build. MSI interrupt support added in T2.2.
 
 A PCI device that provides a 64K MMIO BAR through which a Win9x guest VxD
 can issue hypercalls to the QEMU host. The guest populates arguments in
@@ -485,7 +485,8 @@ registered QEMU-side handlers.
 - **Sub-8-byte access:** argument region supports 4-byte and 8-byte read/write with proper masking
 - **Signal masks:** bidirectional signaling between guest and future host-side services
 - **ABI versioning:** DW1 byte 0 carries `HYP_ABI_VERSION` (currently 1)
-- **No interrupt:** guest polls fence for completion (simpler, avoids legacy PCI IRQ routing on Win9x)
+- **MSI interrupt support:** device fires MSI after handler completion for event-based guest notification (T2.2); falls back to fence polling if MSI unavailable
+- **PCI_INTERRUPT_PIN = 1** for INTx fallback when MSI not available on machine type
 
 **Usage:**
 ```bash
@@ -509,14 +510,14 @@ hypback_register_handler(HYP_GLIDE_TEX_UPLOAD, HYP_GLIDE_BUFFER_SWAP,
 
 **Files modified:**
 
-| File                         | Change                                                        |
-|------------------------------|---------------------------------------------------------------|
-| `include/hw/misc/hypback.h`  | New file — hypercall ABI, op codes, handler registration API  |
-| `hw/misc/hypback.c`          | New file — PCI device, MMIO BAR, doorbell dispatch (~260 LOC) |
-| `hw/misc/meson.build`        | Added `hypback.c` under `CONFIG_HYPBACK`                      |
-| `hw/misc/Kconfig`            | Added `HYPBACK` config entry (`default y if PCI_DEVICES`)     |
-| `tests/qtest/hypback-test.c` | New file — qtest for MMIO read/write verification             |
-| `tests/qtest/meson.build`    | Added `hypback-test` to i386/x86_64 test suites               |
+| File                         | Change                                                                     |
+|------------------------------|----------------------------------------------------------------------------|
+| `include/hw/misc/hypback.h`  | New file — hypercall ABI, op codes, handler registration API               |
+| `hw/misc/hypback.c`          | New file — PCI device, MMIO BAR, doorbell dispatch, MSI support (~280 LOC) |
+| `hw/misc/meson.build`        | Added `hypback.c` under `CONFIG_HYPBACK`                                   |
+| `hw/misc/Kconfig`            | Added `HYPBACK` config entry (`default y if PCI_DEVICES`)                  |
+| `tests/qtest/hypback-test.c` | New file — qtest for MMIO read/write verification                          |
+| `tests/qtest/meson.build`    | Added `hypback-test` to i386/x86_64 test suites                            |
 
 **Pattern reference:** `hw/misc/edu.c` (single BAR MMIO doorbell)
 
@@ -529,6 +530,69 @@ hypback_register_handler(HYP_GLIDE_TEX_UPLOAD, HYP_GLIDE_BUFFER_SWAP,
 - Audio: registers for `HYP_AUDIO_*` (0x5001–0x5002)
 
 Full reference: `qemu98-docs/HYPBACK.md`
+
+##### 5.2.1a Guest tools ISO build system ✅ IMPLEMENTED
+
+> **Status:** Complete — available as of T2.2 build.
+
+A cross-compilation build script (`guest-tools/build-guest-tools.sh`) that
+produces a distributable ISO (`guest-tools.iso`) containing Win9x guest-side
+components. The ISO is attached via `-cdrom` and autoruns the VxD build on
+the guest.
+
+**Host-side build requirements:**
+- `i686-w64-mingw32-gcc` or llvm-mingw clang — cross-compiles the Win32 test
+  harness (`TEST_HYP.EXE`)
+- `xorriso` or `genisoimage` — ISO creation
+
+**ISO contents:**
+
+| Component         | Path                         | Description                                  |
+|-------------------|------------------------------|----------------------------------------------|
+| Test harness      | `/TEST_HYP.EXE`              | Pre-built Win32 smoke test (PE32 executable) |
+| Autorun           | `/AUTORUN.INF`               | Launches `BUILD_VXD.BAT` on disc insertion   |
+| VxD source        | `/VXD/hypback.asm`           | Ring-0 VxD driver (~1050 LOC MASM)           |
+| VxD linker defs   | `/VXD/hypback.def`           | LE executable exports                        |
+| VxD build script  | `/VXD/BUILD_VXD.BAT`         | Guest-side auto-detect, compile, install     |
+| VxD instructions  | `/VXD/README_VXD.TXT`        | Detailed guest-side build docs               |
+| Bundled assembler | `/VXD/tools/uasm/UASM32.EXE` | UASM 2.57 (JWasm successor, MASM-compatible) |
+
+**Guest-side VxD compilation workflow:**
+1. Attach ISO as CD-ROM → autoruns `BUILD_VXD.BAT`
+2. Script detects bundled UASM (or system DDK/MASM/Visual Studio)
+3. Compiles `HYPBACK.VXD` using real DDK headers on guest
+4. Copies to `C:\WINDOWS\SYSTEM\VMM32\`
+5. User adds `device=HYPBACK.VXD` to `SYSTEM.INI [386Enh]`
+6. Reboot guest → run `TEST_HYP.EXE` to verify
+
+**Why guest-side compilation:** The Microsoft DDK segment model requires
+MASM 6.11+ with real `vmm.inc`/`vpicd.inc`/`shell.inc` headers. JWasm on
+Linux cannot handle the DDK-specific segment macros, so the VxD must be
+compiled on a real Windows host or inside the Win9x guest. The ISO bundles
+UASM (open-source MASM-compatible assembler) so the guest only needs DDK
+headers — not a full assembler toolchain.
+
+**Integration tests:**
+
+| Test                                        | What it verifies                                                                          |
+|---------------------------------------------|-------------------------------------------------------------------------------------------|
+| `tests/guest-tools/test-guest-tools-iso.sh` | ISO content: file listing, volume label, xorriso verification                             |
+| `tests/guest-tools/test-vm-cdrom.sh`        | VM boot: QEMU starts with ISO as CD-ROM, SeaBIOS detects DVD/CD, qemu-img validates image |
+
+**Files:**
+
+| File                                        | Purpose                                      |
+|---------------------------------------------|----------------------------------------------|
+| `guest-tools/build-guest-tools.sh`          | Cross-build script producing guest-tools.iso |
+| `guest-tools/vxd/BUILD_VXD.BAT`             | Guest-side VxD build & install script        |
+| `guest-tools/vxd/README_VXD.TXT`            | Guest-side compilation instructions          |
+| `guest-tools/vxd/tools/uasm/`               | Bundled UASM assembler (JWasm successor)     |
+| `tests/guest-tools/test-guest-tools-iso.sh` | Integration test for ISO build               |
+| `tests/guest-tools/test-vm-cdrom.sh`        | VM-level test: boots QEMU with ISO as CD-ROM |
+| `tests/guest-tools/meson.build`             | Meson wiring for guest-tools test suite      |
+| `guest-tools/README.md`                     | Guest tools overview & install guide         |
+| `qemu98-docs/HYPBACK.md`                    | Full hypback device documentation            |
+| `qemu98-docs/BUILD.md`                      | §3.1, §4.9–4.10 — build & verify guest tools |
 
 #### 5.2.2 Voodoo3 PCI device (register-level)
 
@@ -573,18 +637,20 @@ talks to the backdoor device instead).
 
 `guest-tools/` tree (see §4.2):
 
-| Component       | Reality check                                                                                                                                                                                      |
-|-----------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `vxd/`          | ~500 LOC MASM source. Owns the BAR0 mapping, sets up MMU pages, dispatches IRQ-style completion events. **Critical path**, everything else depends on this.                                        |
-| `glide3x-shim/` | Replacement `glide3x.dll` and `glide2x.dll` that intercepts API calls and forwards them to the VxD. Reference implementations: `nGlide`, `dgVoodoo`, `qemu-3dfx`. Build with MinGW cross-compiler. |
-| `ddraw-shim/`   | Replacement `ddraw.dll` for DDraw-only games that don't use D3D. Smaller scope than D3D-shim.                                                                                                      |
-| `d3d-shim/`     | **Deferred.** See §7.5 — direct port of `d7vk` is not viable on Win9x. We will likely partner with Mesa9x instead.                                                                                 |
-| `lib9p/`        | Win9x client for the 9P protocol (used by `-virtfs` or `-fsdev local`). Replacement for plan9port FUSE shims. Reference: 9p-for-win32 / 9p-virtio existing partial implementations.                |
-| `installer/`    | NSIS or Inno Setup script that bundles everything for end users. Registers the DLL shims in SYSTEM.INI or via the registry (90s style).                                                            |
+| Component       | Reality check                                                                                                                                                                                                                                                                                                                                                                                                               |
+|-----------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `vxd/`          | ~1050 LOC MASM source. Owns the BAR0 mapping, sets up MMU pages, dispatches IRQ-style completion events. Detects MSI via PCI capability walk for event-based completion; falls back to fence polling. **Critical path**, everything else depends on this. Compilation is guest-side (DDK headers required — not cross-compilable on Linux). The ISO bundles UASM 2.57 at `vxd/tools/uasm/` for guests without an assembler. |
+| `glide3x-shim/` | Replacement `glide3x.dll` and `glide2x.dll` that intercepts API calls and forwards them to the VxD. Reference implementations: `nGlide`, `dgVoodoo`, `qemu-3dfx`. Build with MinGW cross-compiler.                                                                                                                                                                                                                          |
+| `ddraw-shim/`   | Replacement `ddraw.dll` for DDraw-only games that don't use D3D. Smaller scope than D3D-shim.                                                                                                                                                                                                                                                                                                                               |
+| `d3d-shim/`     | **Deferred.** See §7.5 — direct port of `d7vk` is not viable on Win9x. We will likely partner with Mesa9x instead.                                                                                                                                                                                                                                                                                                          |
+| `lib9p/`        | Win9x client for the 9P protocol (used by `-virtfs` or `-fsdev local`). Replacement for plan9port FUSE shims. Reference: 9p-for-win32 / 9p-virtio existing partial implementations.                                                                                                                                                                                                                                         |
+| `installer/`    | NSIS or Inno Setup script that bundles everything for end users. Registers the DLL shims in SYSTEM.INI or via the registry (90s style).                                                                                                                                                                                                                                                                                     |
 
 #### 5.3.2 The hypercall protocol
 
 The MMIO BAR write layout: a single ABI queue with shared doorbell.
+MSI interrupts are supported for event-based completion notification;
+fence polling remains as fallback when MSI is unavailable.
 
 ```
 +----------------+ 0x0000 : header.dw0 (op | len)
@@ -734,7 +800,9 @@ Patches:
 ```
 0001-cue-bin-block-driver                — block/cue.c (T1)  ✅ IMPLEMENTED
 0002-nearest-scaler                      — ui/console-gl.c (T1/T2) ✅ IMPLEMENTED
-0003-hypercall-backdoor-pci              — hw/misc/hypback.c (T2) ✅ IMPLEMENTED
+0003-hypercall-backdoor-pci              — hw/misc/hypback.c (T2.1) ✅ IMPLEMENTED
+0003a-hypback-msi-support                — MSI interrupt support (T2.2) ✅ IMPLEMENTED
+0003b-guest-tools-iso-build              — guest-tools.iso + VxD build kit (T2.2) ✅ IMPLEMENTED
 0004-voodoo3-pci-device                  — hw/display/voodoo3.c (T2)
 0005-glide-host-renderer-vulkan          — hw/display/voodoo_renderer.c (T3)
 0006-glide-host-renderer-opengl-fallback — same file, fallback path (T3)
@@ -839,8 +907,12 @@ an estimate of self-contained scope.
   - At runtime `Ctrl+Alt+S` toggles integer ↔ fractional scaling; `Ctrl+Alt+N` toggles nearest ↔ linear filtering. Both backends supported.
 
 ### Week 2–4 — Tier 2
-- [x] **T2.1**: hypback PCI device in QEMU (§5.2.1). (2 days)
-- [ ] **T2.2**: Win9x VxD guest driver (§5.3.2). (3–5 days, mostly MASM)
+- [x] **T2.1**: hypback PCI device in QEMU (§5.2.1). (2 days) ✅
+- [x] **T2.2a**: hypback MSI interrupt support + VxD MSI detection (§5.2.1). (1 day) ✅
+- [x] **T2.2b**: Win9x VxD guest driver written in MASM (~1050 LOC, §5.3.1) ✅
+- [x] **T2.2c**: Guest-tools ISO build system + integration tests (§5.2.1a) ✅
+- [ ] **T2.2d**: VxD guest-side compilation verified on real Win9x guest (requires DDK) ⚠  blocked by DDK availability
+  - **Planned resolution:** Boot a minimal Win98 VM with DDK installed, run an automated build script to compile `HYPBACK.VXD`, then extract the binary back to the host for inclusion in the ISO as a pre-built artifact. This eliminates the guest-side compilation requirement for end users.
 - [ ] **T2.3**: Voodoo3 PCI register-level emulation (optional — only needed if shipping it without guest tools). (1 week)
 
 ### Week 4–8 — Tier 3

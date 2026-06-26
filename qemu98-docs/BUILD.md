@@ -133,7 +133,56 @@ multi-core host.
 
 `make install` drops everything into `${prefix}/bin/`.
 
-### 3.1 Building the VM Manager
+### 3.1 Building the Guest Tools ISO
+
+The guest-tools build produces a distributable ISO containing Win9x guest-side
+components (VxD drivers, test harnesses, DLL shims). It is controlled by the
+`guest_tools` meson option:
+
+```bash
+# Enable explicitly (error if JWasm/MinGW/genisoimage missing)
+../configure --enable-guest-tools
+
+# Disable explicitly
+../configure --disable-guest-tools
+
+# Auto-detect (default): builds if tools are available
+# (no flag needed)
+```
+
+The build requires:
+- **MinGW-w64 (i686) or llvm-mingw** — Win32 cross-compiler for test harnesses
+- **genisoimage/xorriso/mkisofs** — ISO creation
+
+Install on Debian/Ubuntu:
+```bash
+sudo apt install -y gcc-mingw-w64-i686 genisoimage
+```
+
+The VxD driver (`HYPBACK.VXD`) is **not** cross-compiled on Linux — the
+Microsoft DDK segment model requires MASM 6.11+ on a real Windows host.
+Instead, the ISO bundles a complete guest-side build kit at `VXD/`:
+
+- **`VXD/tools/uasm/`** — UASM 2.57 (JWasm successor, MASM-compatible)
+- **`VXD/BUILD_VXD.BAT`** — Auto-detects assembler, compiles & installs the VxD
+- **`VXD/hypback.asm` / `hypback.def`** — VxD source and linker exports
+- **`VXD/README_VXD.TXT`** — Detailed guest-side compilation instructions
+
+After the build, the ISO is at `build/guest-tools/guest-tools.iso`.
+Verify its contents:
+```bash
+isoinfo -l -i build/guest-tools/guest-tools.iso
+# Expected: README.TXT, AUTORUN.INF, TEST_HYP.EXE, VXD/ (build kit)
+```
+
+The ISO can be attached to a Win9x VM via `-cdrom` for easy installation.
+On guest, `BUILD_VXD.BAT` autoruns, detects the bundled UASM or a
+system-installed DDK, compiles `HYPBACK.VXD`, and installs it to
+`C:\WINDOWS\SYSTEM\VMM32\`.
+
+Full details: `guest-tools/README.md`.
+
+### 3.2 Building the VM Manager
 
 The QEMU98 Manager is built automatically when Vala and GTK4 are detected.
 Control it via the meson option:
@@ -342,6 +391,60 @@ Note on memory size: 64 MiB is enough to reach SeaBIOS POST (verified in
 loads. **96 MiB is the practical minimum, 128 MiB is the recommended
 default.** Upstream QEMU defaults to 128 MiB if `-m` is omitted, which is
 appropriate for Win9x too.
+
+### 4.9 Guest tools ISO integration test
+
+When built with `--enable-guest-tools`, verify the ISO was produced:
+
+```bash
+cd build
+
+# Run the integration test (skips if guest-tools disabled or tools missing)
+meson test --suite integration guest-tools-iso
+
+# Or check manually
+ls -lh guest-tools/guest-tools.iso
+isoinfo -l -i guest-tools/guest-tools.iso
+```
+
+Expected: ISO file exists (>=2 KiB), contains `README.TXT` and `AUTORUN.INF`,
+with volume label `QEMU98_GUEST_TOOLS`. When cross-compilation tools are
+available, the ISO contains `TEST_HYP.EXE` (pre-built test harness) and the
+`VXD/` guest-side build kit (source + bundled UASM assembler). The VxD
+(`HYPBACK.VXD`) is compiled on the guest by running `BUILD_VXD.BAT`.
+
+If the integration test is skipped (exit code 77), install the missing
+tools and rebuild:
+```bash
+sudo apt install -y gcc-mingw-w64-i686 genisoimage
+```
+
+### 4.10 Guest tools VM-level CD-ROM test
+
+Boot a minimal QEMU VM with `guest-tools.iso` attached as a CD-ROM and
+verify SeaBIOS detects the DVD/CD device.
+
+```bash
+cd build
+
+# Run the VM-level test (skips if ISO or QEMU binary not found)
+meson test --suite integration guest-tools-vm-cdrom
+
+# Or run directly:
+tests/guest-tools/test-vm-cdrom.sh \
+  build/guest-tools/guest-tools.iso \
+  build/qemu-system-i386
+```
+
+Expected: QEMU starts stably (8-second timeout), SeaBIOS banner appears,
+"DVD/CD" boot device is listed in the boot menu, and `qemu-img info`
+recognizes the ISO as a valid raw image. The "Boot failed" message is
+expected — the ISO is a data disc, not a bootable OS.
+
+All guest tools tests can be run together:
+```bash
+meson test --suite integration
+```
 
 ---
 

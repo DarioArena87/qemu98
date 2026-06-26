@@ -1,0 +1,9 @@
+; HYPBACK.DEF — VxD module definition file
+;
+; Declares the VxD exports: one main virtual device.
+; JWasm/Watcom WASM use this to build the LE executable.
+
+LIBRARY HYPBACK
+
+EXPORTS
+    HYPBACK_DDB

@@ -36,6 +36,7 @@
 #include "qemu/bitops.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
+#include "hw/pci/msi.h"
 #include "hw/misc/hypback.h"
 #include "qom/object.h"
 #include "qemu/module.h"
@@ -86,6 +87,9 @@ struct HypbackState {
 
     /* Completion fence — monotonic 64-bit counter */
     uint64_t fence;
+
+    /* MSI interrupt support (optional, fallback to poll if unavailable) */
+    bool msi_enabled;
 };
 
 /* ------------------------------------------------------------------ */
@@ -186,6 +190,13 @@ static void hypback_dispatch(HypbackState* s) {
     for (unsigned i = 0; i < hypback_handler_count; i++) {
         if (op >= hypback_handlers[i].op_start && op <= hypback_handlers[i].op_end) {
             hypback_handlers[i].handler(hypback_handlers[i].opaque, op, arg_count, s->args, &s->fence);
+
+            /* Fire MSI interrupt after handler completes, if enabled.
+             * This lets the guest VxD use IRQ-based completion instead
+             * of polling the fence register. */
+            if (s->msi_enabled) {
+                msi_notify(&s->pdev, 0);
+            }
             return;
         }
     }
@@ -310,10 +321,24 @@ static const MemoryRegionOps hypback_mmio_ops = {
 
 static void pci_hypback_realize(PCIDevice* pdev, Error** errp) {
     HypbackState* s = HYPBACK(pdev);
+    uint8_t* pci_conf = pdev->config;
 
     /* Store global reference for QMP test handler */
     if (!hypback_device) {
         hypback_device = s;
+    }
+
+    /* Set interrupt pin for INTx fallback when MSI is unavailable */
+    pci_config_set_interrupt_pin(pci_conf, 1);
+
+    /* Try to enable MSI. If it fails (e.g. on older machine types),
+     * we fall back to poll-only completion — the VxD will detect
+     * this and use fence polling instead. */
+    if (msi_init(pdev, 0, 1, true, false, NULL) == 0) {
+        s->msi_enabled = true;
+    }
+    else {
+        s->msi_enabled = false;
     }
 
     memory_region_init_io(&s->mmio, OBJECT(s), &hypback_mmio_ops, s, "hypback-mmio", HYP_MMIO_SIZE);
@@ -324,6 +349,8 @@ static void pci_hypback_exit(PCIDevice* pdev) {
     if (hypback_device == HYPBACK(pdev)) {
         hypback_device = NULL;
     }
+
+    msi_uninit(pdev);
 }
 
 static void hypback_class_init(ObjectClass* class, const void* data) {

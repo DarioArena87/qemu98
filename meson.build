@@ -3742,6 +3742,7 @@ subdir('tcg')
 subdir('fpu')
 subdir('plugins')
 subdir('ebpf')
+subdir('guest-tools')
 
 if have_system
   subdir('hw')

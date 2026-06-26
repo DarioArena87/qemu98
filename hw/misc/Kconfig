@@ -38,7 +38,7 @@ config EDU
 config HYPBACK
     bool
     default y if PCI_DEVICES
-    depends on PCI
+    depends on PCI && MSI_NONBROKEN
 
 config I2C_ECHO
     bool
