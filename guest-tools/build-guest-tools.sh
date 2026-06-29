@@ -220,8 +220,8 @@ if $have_iso_tool; then
     echo "--- Creating guest-tools.iso ---"
 
     case "$ISO_TOOL" in
-        xorriso)
-            xorriso -as mkisofs \
+        *xorriso*)
+            "$ISO_TOOL" -as mkisofs \
                 -V "QEMU98_GUEST_TOOLS" \
                 -J -R \
                 -o "$ISO_FILE" \

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=QEMU98 Manager
+Comment=VirtualBox-style VM manager for Win9x-tailored QEMU
+Icon=qemu98-manager
+Type=Application
+Terminal=false
+Categories=System;Emulator;GTK;
+Keywords=Virtualization;VM;Win9x;Windows 98;Windows 95;QEMU;
+StartupNotify=true

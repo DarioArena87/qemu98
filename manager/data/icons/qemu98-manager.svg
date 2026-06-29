@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!-- Background rounded rect -->
+  <rect width="128" height="128" rx="16" fill="#2d2d2d"/>
+
+  <!-- Monitor screen -->
+  <rect x="20" y="18" width="88" height="62" rx="4" fill="#1a1a2e"/>
+  <rect x="24" y="22" width="80" height="54" rx="2" fill="#16213e"/>
+
+  <!-- Screen glow (blue gradient approximation) -->
+  <rect x="28" y="26" width="72" height="46" rx="2" fill="url(#screenGrad)"/>
+
+  <!-- Window decorations on screen -->
+  <rect x="32" y="30" width="64" height="6" rx="1" fill="#0f3460" opacity="0.8"/>
+  <circle cx="36" cy="33" r="2" fill="#e94560"/>
+  <circle cx="42" cy="33" r="2" fill="#f5c518"/>
+  <circle cx="48" cy="33" r="2" fill="#4e9f3d"/>
+
+  <!-- VM indicator boxes on screen -->
+  <rect x="34" y="42" width="26" height="12" rx="2" fill="#533483" opacity="0.7"/>
+  <rect x="64" y="42" width="26" height="12" rx="2" fill="#533483" opacity="0.7"/>
+
+  <rect x="34" y="57" width="26" height="8" rx="2" fill="#e94560" opacity="0.5"/>
+  <rect x="64" y="57" width="26" height="8" rx="2" fill="#e94560" opacity="0.5"/>
+
+  <!-- Monitor stand -->
+  <rect x="52" y="80" width="24" height="12" rx="2" fill="#555"/>
+  <rect x="42" y="92" width="44" height="6" rx="3" fill="#555"/>
+
+  <!-- Gear icon overlay (bottom-right) -->
+  <g transform="translate(78, 72) scale(0.55)">
+    <circle cx="50" cy="50" r="22" fill="none" stroke="#e94560" stroke-width="8"/>
+    <circle cx="50" cy="50" r="16" fill="#2d2d2d" stroke="#e94560" stroke-width="4"/>
+    <circle cx="50" cy="50" r="8" fill="#e94560"/>
+    <!-- Gear teeth -->
+    <rect x="46" y="22" width="8" height="14" rx="2" fill="#e94560"/>
+    <rect x="46" y="65" width="8" height="14" rx="2" fill="#e94560"/>
+    <rect x="20" y="46" width="14" height="8" rx="2" fill="#e94560"/>
+    <rect x="66" y="46" width="14" height="8" rx="2" fill="#e94560"/>
+    <rect x="25" y="28" width="13" height="8" rx="2" fill="#e94560" transform="rotate(45 31 32)"/>
+    <rect x="62" y="65" width="13" height="8" rx="2" fill="#e94560" transform="rotate(45 68 69)"/>
+    <rect x="62" y="28" width="13" height="8" rx="2" fill="#e94560" transform="rotate(-45 68 32)"/>
+    <rect x="25" y="65" width="13" height="8" rx="2" fill="#e94560" transform="rotate(-45 31 69)"/>
+  </g>
+
+  <defs>
+    <linearGradient id="screenGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#533483" stop-opacity="0.6"/>
+      <stop offset="50%" stop-color="#16213e" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#0f3460" stop-opacity="0.4"/>
+    </linearGradient>
+  </defs>
+</svg>

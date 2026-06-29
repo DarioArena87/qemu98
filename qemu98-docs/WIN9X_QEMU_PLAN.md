@@ -134,6 +134,7 @@ mkdir build && cd build
   --disable-rust --disable-plugins --disable-tcg-interpreter \
   --audio-drv-list='alsa,pa,pipewire,oss,sdl' \
   --enable-kvm --enable-whpx \
+  --enable-guest-tools --enable-vm-manager \
   --disable-virtfs --disable-vhost-user \
   --disable-vfio-user-server --disable-libvduse --disable-vduse-blk-export \
   --disable-rbd --disable-libiscsi --disable-libnfs --disable-libssh \
@@ -934,7 +935,7 @@ an estimate of self-contained scope.
 - [ ] **S3**: docker-compose-style orchestration for multi-VM test runners.
 
 ### VM Manager (parallel track — see `VM_MANAGER.md` §10)
-- [ ] **M1**: Skeleton — meson build, GtkApplication, window, ConfigStore. (1 week)
+- [x] **M1**: Skeleton — meson build, GtkApplication, window, ConfigStore. (1 week) ✅
 - [ ] **M2**: VM Lifecycle — ProcessManager, QmpClient, VmController. (1–2 weeks)
 - [ ] **M3**: Configuration UI — Wizard, editor, disk image helper. (2 weeks)
 - [ ] **M4**: Runtime Operations — Media panel, snapshot manager. (2 weeks)

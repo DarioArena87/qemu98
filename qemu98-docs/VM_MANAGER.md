@@ -580,16 +580,16 @@ sudo apt install -y valac libgtk-4-dev libjson-glib-dev
 ## 10. Implementation Roadmap
 
 ### Phase 1 — Skeleton (Week 1)
-- [ ] Meson build integration (meson option, subdir, `valac` detection)
-- [ ] `main.vala`: GtkApplication, window, menu bar
-- [ ] `config-store.vala`: JSON read/write with schema v1
-- [ ] Manual test: builds, opens a window, creates/saves a dummy config
+- [x] Meson build integration (meson option, subdir, `valac` detection)
+- [x] `main.vala`: GtkApplication, window, menu bar
+- [x] `config-store.vala`: JSON read/write with schema v1
+- [x] Manual test: builds, opens a window, creates/saves a dummy config
 
 ### Phase 2 — VM Lifecycle (Week 2–3)
-- [ ] `process-manager.vala`: CLI builder, subprocess spawn, SIGCHLD monitor
-- [ ] `qmp-client.vala`: Unix socket connect, greeting, command dispatch, events
-- [ ] `vm-controller.vala`: State machine (stopped→running→paused→stopped)
-- [ ] `ui/vm-list.vala`: Sidebar with VM entries and status indicators
+- [x] `process-manager.vala`: CLI builder, subprocess spawn, SIGCHLD monitor
+- [x] `qmp-client.vala`: Unix socket connect, greeting, command dispatch, events
+- [x] `vm-controller.vala`: State machine (stopped→running→paused→stopped)
+- [x] `ui/vm-list.vala`: Sidebar with VM entries and status indicators
 - [ ] Manual test: start a real Win9x VM from a saved config, see it run, 
   stop it gracefully
 

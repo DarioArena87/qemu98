@@ -85,6 +85,7 @@ mkdir build && cd build
   --disable-rust --disable-plugins --disable-tcg-interpreter \
   --audio-drv-list='alsa,pa,pipewire,oss,sdl' \
   --enable-kvm --enable-whpx \
+  --enable-guest-tools --enable-vm-manager \
   --disable-virtfs --disable-vhost-user \
   --disable-vfio-user-server --disable-libvduse --disable-vduse-blk-export \
   --disable-rbd --disable-libiscsi --disable-libnfs --disable-libssh \

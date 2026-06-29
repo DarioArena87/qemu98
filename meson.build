@@ -3744,6 +3744,13 @@ subdir('plugins')
 subdir('ebpf')
 subdir('guest-tools')
 
+build_manager = get_option('vm_manager') \
+  .require(have_system, error_message: 'manager requires system emulator') \
+  .allowed()
+if build_manager
+  subdir('manager')
+endif
+
 if have_system
   subdir('hw')
 else
