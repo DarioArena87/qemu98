@@ -43,6 +43,9 @@ public class VmConfigEditor : Gtk.Box {
     /** Emitted when the user saves changes (passes old name for renames). */
     public signal void config_saved (string vm_name, string? old_name);
 
+    /** Emitted when the user requests deletion of this VM. */
+    public signal void delete_requested (string vm_name);
+
     // ---- Construction ----
 
     public VmConfigEditor (ConfigStore config_store) {
@@ -77,6 +80,11 @@ public class VmConfigEditor : Gtk.Box {
         save_btn.add_css_class ("suggested-action");
         save_btn.clicked.connect (on_save);
         save_bar.append (save_btn);
+
+        var delete_btn = new Gtk.Button.with_label ("Delete VM…");
+        delete_btn.add_css_class ("destructive-action");
+        delete_btn.clicked.connect (on_delete);
+        save_bar.append (delete_btn);
 
         append (save_bar);
     }
@@ -436,6 +444,10 @@ public class VmConfigEditor : Gtk.Box {
         config_store.save_config (vm_name, config);
         status_label.label = "✓ Config saved";
         config_saved (vm_name, old_name);
+    }
+
+    private void on_delete () {
+        delete_requested (vm_name);
     }
 
     // ---- Helpers ----

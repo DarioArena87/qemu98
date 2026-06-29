@@ -40,6 +40,9 @@ public class VmList : Gtk.Box {
     /** Emitted when the user double-clicks or activates a VM. */
     public signal void vm_activated (string vm_name);
 
+    /** Emitted when the user right-clicks a VM (coordinates relative to VmList). */
+    public signal void context_menu_requested (string vm_name, double x, double y);
+
     // ---- Construction ----
 
     public VmList (ConfigStore config_store) {
@@ -67,7 +70,7 @@ public class VmList : Gtk.Box {
 
         // Selection
         selection = new Gtk.SingleSelection (model);
-        selection.selection_changed.connect (on_selection_changed);
+        selection.notify["selected"].connect (on_selection_changed);
 
         // List view
         list_view = new Gtk.ListView (selection, null);
@@ -123,6 +126,17 @@ public class VmList : Gtk.Box {
         var entry = new VmEntry (name);
         entries[name] = entry;
         model.append (entry);
+    }
+
+    /** Select a VM in the list programmatically (without page switch). */
+    public void select_vm (string vm_name) {
+        for (var i = 0; i < model.get_n_items (); i++) {
+            var entry = (VmEntry) model.get_item (i);
+            if (entry.name == vm_name) {
+                selection.set_selected (i);
+                return;
+            }
+        }
     }
 
     /** Remove a VM entry from the list. */
@@ -189,6 +203,17 @@ public class VmList : Gtk.Box {
         label.ellipsize = Pango.EllipsizeMode.END;
         row.append (label);
 
+        // Right-click gesture for context menu
+        var right_click = new Gtk.GestureClick ();
+        right_click.button = 3; // right button
+        right_click.pressed.connect ((n_press, x, y) => {
+            unowned var row_widget = (Gtk.Box) list_item.child;
+            var vm_name = row_widget.get_data<string> ("vm-name");
+            if (vm_name != null)
+                context_menu_requested (vm_name, x, y);
+        });
+        row.add_controller (right_click);
+
         list_item.child = row;
     }
 
@@ -202,6 +227,10 @@ public class VmList : Gtk.Box {
         var label = (Gtk.Label) dot.get_next_sibling ();
 
         label.label = entry.name;
+
+        // Store VM name on the row for context menu access
+        row.set_data<string> ("vm-name", entry.name);
+
         dot.set_data<string> ("state",
             entry.state == VmController.VmState.RUNNING ? "running" :
             entry.state == VmController.VmState.PAUSED ? "paused" :

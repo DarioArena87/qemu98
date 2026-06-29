@@ -7,6 +7,7 @@
  * Phase 1: window + menu + config store
  * Phase 2: VM list + controller + start/stop lifecycle
  * Phase 3: New VM wizard, config editor, disk image wizard
+ * Phase 4: Snapshot panel, media panel, runtime operations
  */
 
 public class Qemu98Manager : Gtk.Application {
@@ -20,6 +21,12 @@ public class Qemu98Manager : Gtk.Application {
     private Gtk.Stack main_stack;
     private Gtk.Label welcome_page;
     private VmConfigEditor config_editor;
+    private Gtk.Notebook runtime_notebook;
+    private SnapshotPanel snapshot_panel;
+    private MediaPanel media_panel;
+
+    // Currently selected VM name
+    private string? current_vm = null;
 
     /** Path to qemu-system-i386. Searches PATH at runtime. */
     private const string QEMU_BINARY = "qemu-system-i386";
@@ -43,7 +50,14 @@ public class Qemu98Manager : Gtk.Application {
                 GLib.str_hash, GLib.str_equal
             );
             create_main_window ();
-            populate_vm_list ();
+
+            // VmList.refresh() auto-selects the first VM during construction,
+            // but the vm_selected signal was emitted before we connected to it.
+            // Manually trigger the handler for the first VM so current_vm,
+            // the config editor, and action states are all properly synced.
+            var names = config_store.list_vms ();
+            if (names.length > 0)
+                on_vm_selected (names[0]);
         }
         main_window.present ();
     }
@@ -51,9 +65,8 @@ public class Qemu98Manager : Gtk.Application {
     protected override void shutdown () {
         controllers.for_each ((name, ctrl) => {
             var controller = (VmController) ctrl;
-            if (controller.state != VmController.VmState.STOPPED) {
+            if (controller.state != VmController.VmState.STOPPED)
                 controller.stop ();
-            }
             controller.dispose_resources ();
         });
         base.shutdown ();
@@ -73,6 +86,11 @@ public class Qemu98Manager : Gtk.Application {
         main_window.child = main_box;
     }
 
+    // Track action references for enable/disable
+    private SimpleAction start_action;
+    private SimpleAction stop_action;
+    private SimpleAction delete_action;
+
     private Gtk.PopoverMenuBar build_menu_bar () {
         var menu_model = new GLib.Menu ();
 
@@ -82,6 +100,8 @@ public class Qemu98Manager : Gtk.Application {
         machine_menu.append_section (null, new GLib.Menu ());
         machine_menu.append ("Start VM", "app.start-vm");
         machine_menu.append ("Stop VM", "app.stop-vm");
+        machine_menu.append_section (null, new GLib.Menu ());
+        machine_menu.append ("Delete VM…", "app.delete-vm");
         machine_menu.append_section (null, new GLib.Menu ());
         machine_menu.append ("Quit", "app.quit");
         menu_model.append_submenu ("Machine", machine_menu);
@@ -105,13 +125,20 @@ public class Qemu98Manager : Gtk.Application {
         import_vm_action.activate.connect (on_import_vm);
         actions.add_action (import_vm_action);
 
-        var start_action = new SimpleAction ("start-vm", null);
+        start_action = new SimpleAction ("start-vm", null);
         start_action.activate.connect (on_start_vm);
+        start_action.set_enabled (false);
         actions.add_action (start_action);
 
-        var stop_action = new SimpleAction ("stop-vm", null);
+        stop_action = new SimpleAction ("stop-vm", null);
         stop_action.activate.connect (on_stop_vm);
+        stop_action.set_enabled (false);
         actions.add_action (stop_action);
+
+        delete_action = new SimpleAction ("delete-vm", null);
+        delete_action.activate.connect (on_delete_vm);
+        delete_action.set_enabled (false);
+        actions.add_action (delete_action);
 
         var create_disk_action = new SimpleAction ("create-disk", null);
         create_disk_action.activate.connect (on_create_disk);
@@ -142,6 +169,7 @@ public class Qemu98Manager : Gtk.Application {
         vm_list = new VmList (config_store);
         vm_list.vm_selected.connect (on_vm_selected);
         vm_list.vm_activated.connect (on_vm_activated);
+        vm_list.context_menu_requested.connect (on_vm_context_menu);
         paned.start_child = vm_list;
 
         // Main area: stack of pages
@@ -164,19 +192,31 @@ public class Qemu98Manager : Gtk.Application {
 
         config_editor = new VmConfigEditor (config_store);
         config_editor.config_saved.connect (on_config_saved);
+        config_editor.delete_requested.connect (on_delete_vm);
         main_stack.add_named (config_editor, "editor");
+
+        // Phase 4: Runtime operations notebook (snapshots + media)
+        runtime_notebook = new Gtk.Notebook ();
+        runtime_notebook.hexpand = true;
+        runtime_notebook.vexpand = true;
+
+        snapshot_panel = new SnapshotPanel ();
+        runtime_notebook.append_page (
+            snapshot_panel,
+            new Gtk.Label ("Snapshots")
+        );
+
+        media_panel = new MediaPanel ();
+        runtime_notebook.append_page (
+            media_panel,
+            new Gtk.Label ("Media")
+        );
+
+        main_stack.add_named (runtime_notebook, "runtime");
 
         main_stack.visible_child = welcome_page;
         paned.end_child = main_stack;
         return paned;
-    }
-
-    // ---- VM list ----
-
-    private void populate_vm_list () {
-        foreach (var name in config_store.list_vms ()) {
-            vm_list.add_vm (name);
-        }
     }
 
     // ---- VM lifecycle ----
@@ -194,6 +234,11 @@ public class Qemu98Manager : Gtk.Application {
         var ctrl = new VmController (QEMU_BINARY, config);
         ctrl.state_changed.connect ((old_state, new_state) => {
             vm_list.set_vm_state (vm_name, new_state);
+            // Switch page based on VM state for the currently selected VM
+            if (vm_name == current_vm) {
+                update_main_page (new_state);
+                update_action_states ();
+            }
         });
         ctrl.error_occurred.connect ((msg) => {
             warning ("VM '%s' error: %s", vm_name, msg);
@@ -201,9 +246,26 @@ public class Qemu98Manager : Gtk.Application {
         ctrl.qmp_event.connect ((event_name, data) => {
             debug ("VM '%s' QMP event: %s", vm_name, event_name);
         });
+        ctrl.snapshot_operation_complete.connect ((op, success, msg) => {
+            message ("VM '%s' snapshot %s: %s", vm_name, op, msg);
+        });
+        ctrl.media_operation_complete.connect ((device, success, msg) => {
+            message ("VM '%s' media on %s: %s", vm_name, device, msg);
+        });
 
         controllers[vm_name] = ctrl;
         return ctrl;
+    }
+
+    /** Update the main page based on VM state. */
+    private void update_main_page (VmController.VmState state) {
+        if (state == VmController.VmState.RUNNING ||
+            state == VmController.VmState.PAUSED) {
+            main_stack.visible_child = runtime_notebook;
+        } else if (state == VmController.VmState.STOPPED ||
+                   state == VmController.VmState.ERROR) {
+            main_stack.visible_child = config_editor;
+        }
     }
 
     // ---- Action handlers ----
@@ -211,8 +273,8 @@ public class Qemu98Manager : Gtk.Application {
     private void on_new_vm () {
         var wizard = new NewVmWizard (config_store);
 
-        wizard.close.connect (() => {
-            if (wizard.result_config != null && wizard.result_name != null) {
+        wizard.response.connect ((response_id) => {
+            if (response_id == -5 && wizard.result_config != null && wizard.result_name != null) {
                 config_store.save_config (wizard.result_name, wizard.result_config);
                 vm_list.add_vm (wizard.result_name);
                 message ("VM created: %s", wizard.result_name);
@@ -223,17 +285,58 @@ public class Qemu98Manager : Gtk.Application {
     }
 
     private void on_import_vm () {
-        message ("Import VM: not yet implemented");
+        var buttons = new string[] { "OK" };
+        var dialog = new Gtk.AlertDialog ("Import VM");
+        dialog.set_detail ("Import VM from file is not yet implemented.\n\nYou can manually copy .json config files into\n~/.local/share/qemu98/machines/ and use View → Refresh.");
+        dialog.set_buttons (buttons);
+        dialog.choose.begin (main_window, null, (obj, res) => {
+            try { dialog.choose.end (res); } catch (GLib.Error e) {}
+        });
+    }
+
+    private void on_delete_vm () {
+        if (current_vm == null)
+            return;
+
+        var vm_to_delete = current_vm;
+        var buttons = new string[] { "Cancel", "Delete" };
+
+        var dialog = new Gtk.AlertDialog ("Delete VM");
+        dialog.set_detail (@"Delete virtual machine '$(vm_to_delete)'?\n\nThis will remove the configuration file.\nDisk images will NOT be deleted.");
+        dialog.set_buttons (buttons);
+        dialog.choose.begin (main_window, null, (obj, res) => {
+            try {
+                var response_idx = dialog.choose.end (res);
+                if (response_idx == 1) { // "Delete" button (index 1)
+                    // Stop the VM if running
+                    if (controllers.contains (vm_to_delete)) {
+                        var ctrl = controllers[vm_to_delete];
+                        if (ctrl.state != VmController.VmState.STOPPED)
+                            ctrl.stop ();
+                    }
+
+                    config_store.delete_config (vm_to_delete);
+                    vm_list.remove_vm (vm_to_delete);
+
+                    if (current_vm == vm_to_delete) {
+                        current_vm = null;
+                        main_stack.visible_child = welcome_page;
+                    }
+
+                    update_action_states ();
+                    message ("VM deleted: %s", vm_to_delete);
+                }
+            } catch (GLib.Error e) {}
+        });
     }
 
     private void on_start_vm () {
-        var names = config_store.list_vms ();
-        if (names.length == 0) {
-            message ("No VMs configured — create one first");
+        if (current_vm == null) {
+            message ("No VM selected — select one from the sidebar first");
             return;
         }
 
-        var ctrl = get_or_create_controller (names[0]);
+        var ctrl = get_or_create_controller (current_vm);
         if (ctrl != null)
             ctrl.start ();
     }
@@ -257,8 +360,41 @@ public class Qemu98Manager : Gtk.Application {
     }
 
     private void on_vm_selected (string vm_name) {
+        current_vm = vm_name;
         config_editor.load (vm_name);
-        main_stack.visible_child = config_editor;
+
+        // Determine which page to show
+        var ctrl = controllers[vm_name];
+        if (ctrl != null && (ctrl.state == VmController.VmState.RUNNING ||
+                             ctrl.state == VmController.VmState.PAUSED)) {
+            // VM is running — show runtime page with live controls
+            snapshot_panel.set_controller (ctrl);
+            media_panel.set_controller (ctrl);
+            main_stack.visible_child = runtime_notebook;
+        } else {
+            // VM is stopped — show config editor
+            snapshot_panel.set_controller (null);
+            media_panel.set_controller (null);
+            main_stack.visible_child = config_editor;
+        }
+
+        update_action_states ();
+    }
+
+    /** Enable/disable actions based on current VM selection state. */
+    private void update_action_states () {
+        bool has_vm = current_vm != null;
+        start_action.set_enabled (has_vm);
+        delete_action.set_enabled (has_vm);
+
+        bool is_running = false;
+        if (has_vm && controllers.contains (current_vm)) {
+            var c = controllers[current_vm];
+            is_running = c.state == VmController.VmState.RUNNING ||
+                         c.state == VmController.VmState.PAUSED ||
+                         c.state == VmController.VmState.STARTING;
+        }
+        stop_action.set_enabled (is_running);
     }
 
     private void on_vm_activated (string vm_name) {
@@ -273,11 +409,31 @@ public class Qemu98Manager : Gtk.Application {
         }
     }
 
+    /** Handle right-click context menu on VM list. */
+    private void on_vm_context_menu (string vm_name, double x, double y) {
+        // Select the VM in the sidebar (this triggers on_vm_selected which
+        // syncs current_vm, loads config, switches pages, and updates actions)
+        vm_list.select_vm (vm_name);
+
+        // Build a simple context menu with Start, Stop, Delete
+        var menu = new GLib.Menu ();
+        menu.append ("Start", "app.start-vm");
+        menu.append ("Stop", "app.stop-vm");
+        menu.append ("Delete…", "app.delete-vm");
+
+        var popover = new Gtk.PopoverMenu.from_model (menu);
+        popover.set_parent (vm_list);
+        popover.set_has_arrow (false);
+        popover.set_position (Gtk.PositionType.RIGHT);
+        popover.popup ();
+    }
+
     private void on_config_saved (string vm_name, string? old_name) {
         if (old_name != null) {
             vm_list.remove_vm (old_name);
         }
         vm_list.add_vm (vm_name);
+        update_action_states ();
     }
 
     private void on_refresh () {
@@ -286,13 +442,14 @@ public class Qemu98Manager : Gtk.Application {
     }
 
     private void on_about () {
+        var authors = new string[] { "QEMU98 Contributors" };
         var dialog = new Gtk.AboutDialog () {
             modal = true,
             program_name = "QEMU98 Manager",
-            version = "0.2.0",
+            version = "0.3.0",
             comments = "A VirtualBox-style VM manager for Win9x-tailored QEMU.",
             website = "https://codebuff.com/qemu98",
-            authors = { "QEMU98 Contributors" },
+            authors = authors,
             license_type = Gtk.License.GPL_2_0
         };
         dialog.present ();

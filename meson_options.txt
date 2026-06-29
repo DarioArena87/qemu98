@@ -384,7 +384,5 @@ option('rust', type: 'feature', value: 'disabled',
        description: 'Rust support')
 option('guest_tools', type: 'feature', value: 'auto',
        description: 'Build Win9x guest tools (VxD, test harness) into distributable ISO')
-option('vm_manager', type: 'feature', value: 'auto',
-       description: 'Build the QEMU98 VM Manager GUI (requires Vala, GTK4, json-glib)')
 option('strict_rust_lints', type: 'boolean', value: false,
        description: 'Enable stricter set of Rust warnings')

@@ -19,11 +19,15 @@ We are forking QEMU to virtualize **Windows 95 / 98 / ME (Win9x)** PCs of the
 Direct3D 5/6/7), audio, CD-ROM mounting (CUE/BIN), host integration, and
 pixel-perfect scaling.
 
-This fork should add a `guest-tools/` tree containing the Win9x-side DLLs/VxD installer,
-and a **`manager/`** tree containing the QEMU98 Manager — a standalone GTK4/Vala
-desktop GUI for creating and managing Win9x virtual machines (see `VM_MANAGER.md`).
+This fork adds:
+- a `guest-tools/` tree containing the Win9x-side DLLs/VxD installer,
+- a **`manager/`** tree (located at the repo root but built independently from the
+  parent QEMU fork as of 2026): the QEMU98 Manager — a standalone GTK4/Vala
+  desktop GUI for creating and managing Win9x virtual machines
+  (see `qemu98-docs/VM_MANAGER.md`).
+
 **Three of the most expensive customizations** (CUE/BIN block driver, a
-nearest-neighbor scaler, and a hypercall backdoor PCI device). 
+nearest-neighbor scaler, and a hypercall backdoor PCI device).
 **Three of the most guest-specific customizations** (Glide/D3D
 shims, Win9x VxD, installer) live entirely inside `guest-tools/`.
 
@@ -117,7 +121,9 @@ that communicates with QEMU exclusively via QMP over Unix sockets — it never
 links against QEMU libraries. This keeps the QEMU fork mergeable with 
 upstream and the manager independently versioned.
 
-Architecture documented in full in `VM_MANAGER.md`.
+Architecture documented in full in `qemu98-docs/VM_MANAGER.md`.
+The manager builds independently of QEMU (its own meson project, its own build dir).
+See `qemu98-docs/VM_MANAGER.md` §7 for the standalone-build workflow.
 
 ---
 

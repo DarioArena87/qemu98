@@ -128,6 +128,8 @@ public class NewVmWizard : Gtk.Dialog {
     private Gtk.Box make_page_box () {
         var box = new Gtk.Box (Gtk.Orientation.VERTICAL, 12);
         box.margin_top = 12;
+        box.hexpand = true;
+        box.vexpand = true;
         return box;
     }
 
@@ -237,11 +239,14 @@ public class NewVmWizard : Gtk.Dialog {
         if (current_page == page_keys.length - 1) {
             // Finish — on the review page
             var name = name_entry.text.strip ();
-            if (name == "") return;
+            if (name == "") {
+                show_error_dialog ("Please enter a name for the virtual machine.");
+                return;
+            }
             result_name = name;
             result_config = build_config (name);
-            response (-5); // GTK_RESPONSE_OK
-            close ();
+            response (-5); // GTK_RESPONSE_OK — emits ::response, closes dialog
+            this.destroy (); // force close in case response() doesn't destroy
             return;
         }
 
@@ -301,6 +306,17 @@ public class NewVmWizard : Gtk.Dialog {
     }
 
     // ---- Config builder ----
+
+    /** Show an error dialog to the user. */
+    private void show_error_dialog (string message) {
+        var dialog = new Gtk.AlertDialog ("Cannot Finish");
+        dialog.set_detail (message);
+        var buttons = new string[] { "OK" };
+        dialog.set_buttons (buttons);
+        dialog.choose.begin (this, null, (obj, res) => {
+            try { dialog.choose.end (res); } catch (GLib.Error e) {}
+        });
+    }
 
     private Json.Object build_config (string vm_name) {
         var config = ConfigStore.create_default_config (vm_name);

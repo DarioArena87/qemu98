@@ -5,8 +5,8 @@
  * the full lifecycle: config load → process spawn → QMP connect →
  * negotiation → ready → running. Handles shutdown and crash recovery.
  *
- * Phase 2: start, stop, state machine. Pause/resume and snapshot
- * management deferred.
+ * Phase 2: start, stop, state machine. Pause/resume.
+ * Phase 4: snapshot take/delete/restore, media change/eject.
  */
 
 public class VmController : GLib.Object {
@@ -54,6 +54,16 @@ public class VmController : GLib.Object {
 
     /** Emitted on errors (launch failure, QMP failure, crash). */
     public signal void error_occurred (string message);
+
+    /** Emitted when a snapshot operation completes. */
+    public signal void snapshot_operation_complete (
+        string op, bool success, string message
+    );
+
+    /** Emitted when a media change completes. */
+    public signal void media_operation_complete (
+        string device, bool success, string message
+    );
 
     // ---- Internal ----
 
@@ -276,6 +286,130 @@ public class VmController : GLib.Object {
             state_changed (old, new_state);
         }
     }
+
+    // ---- Snapshot operations (Phase 4) ----
+
+    /** Take a live snapshot via QMP savevm. */
+    public void take_snapshot (string name) {
+        if (!qmp_connected) {
+            snapshot_operation_complete (
+                "take", false, "QMP not connected"
+            );
+            return;
+        }
+
+        var args = new Json.Object ();
+        args.set_string_member ("name", name);
+        qmp_client.send_command_sync ("savevm", args);
+        message ("VmController[%s]: snapshot taken: %s", vm_name, name);
+        snapshot_operation_complete (
+            "take", true, @"Snapshot '$name' created"
+        );
+    }
+
+    /** Delete a snapshot via QMP delvm. */
+    public void delete_snapshot (string name) {
+        if (!qmp_connected) {
+            snapshot_operation_complete (
+                "delete", false, "QMP not connected"
+            );
+            return;
+        }
+
+        var args = new Json.Object ();
+        args.set_string_member ("name", name);
+        qmp_client.send_command_sync ("delvm", args);
+        message ("VmController[%s]: snapshot deleted: %s", vm_name, name);
+        snapshot_operation_complete (
+            "delete", true, @"Snapshot '$name' deleted"
+        );
+    }
+
+    /** Restore a snapshot via QMP loadvm. */
+    public void restore_snapshot (string name) {
+        if (!qmp_connected) {
+            snapshot_operation_complete (
+                "restore", false, "QMP not connected"
+            );
+            return;
+        }
+
+        var args = new Json.Object ();
+        args.set_string_member ("name", name);
+        qmp_client.send_command_sync ("loadvm", args);
+        message ("VmController[%s]: snapshot restored: %s", vm_name, name);
+        snapshot_operation_complete (
+            "restore", true, @"Snapshot '$name' restored"
+        );
+    }
+
+    /** Get the primary disk image path from the VM config. */
+    public string? get_disk_image_path () {
+        if (!config.has_member ("storage"))
+            return null;
+
+        var storage = config.get_object_member ("storage");
+        if (!storage.has_member ("controllers"))
+            return null;
+
+        var controllers = storage.get_array_member ("controllers");
+        if (controllers.get_length () == 0)
+            return null;
+
+        var ctrl = controllers.get_object_element (0);
+        if (!ctrl.has_member ("devices"))
+            return null;
+
+        var devs = ctrl.get_array_member ("devices");
+        if (devs.get_length () == 0)
+            return null;
+
+        var disk = devs.get_object_element (0);
+        return disk.has_member ("file") ? disk.get_string_member ("file") : null;
+    }
+
+    // ---- Media operations (Phase 4) ----
+
+    /** Change media in a block device via QMP blockdev-change-medium. */
+    public void change_media (string device_id, string file_path) {
+        if (!qmp_connected) {
+            media_operation_complete (
+                device_id, false, "QMP not connected"
+            );
+            return;
+        }
+
+        var args = new Json.Object ();
+        args.set_string_member ("device", device_id);
+        args.set_string_member ("filename", file_path);
+        qmp_client.send_command_sync ("blockdev-change-medium", args);
+        message ("VmController[%s]: media changed on %s → %s",
+                 vm_name, device_id, file_path);
+        media_operation_complete (
+            device_id, true, @"Media changed to $(GLib.Path.get_basename(file_path))"
+        );
+    }
+
+    /** Eject media from a block device via QMP eject. */
+    public void eject_media (string device_id) {
+        if (!qmp_connected) {
+            media_operation_complete (
+                device_id, false, "QMP not connected"
+            );
+            return;
+        }
+
+        var args = new Json.Object ();
+        args.set_string_member ("device", device_id);
+        args.set_boolean_member ("force", false);
+        qmp_client.send_command_sync ("eject", args);
+        message ("VmController[%s]: media ejected from %s", vm_name, device_id);
+        media_operation_complete (
+            device_id, true, "Media ejected"
+        );
+    }
+
+    // ---- Cleanup ----
 
     /** Clean up all resources. */
     public void dispose_resources () {

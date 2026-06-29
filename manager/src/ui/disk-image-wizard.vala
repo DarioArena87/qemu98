@@ -53,7 +53,7 @@ public class DiskImageWizard : Gtk.Dialog {
 
         var path_row = new Gtk.Box (Gtk.Orientation.HORIZONTAL, 6);
         path_entry = new Gtk.Entry () {
-            placeholder_text = "~/qemu98-images/win98-disk.qcow2",
+            placeholder_text = "~/qemu98-images/vm-disk.qcow2",
             hexpand = true
         };
         path_entry.activate.connect (() => { create_image (); });
@@ -134,14 +134,14 @@ public class DiskImageWizard : Gtk.Dialog {
     private void on_create () {
         var path = path_entry.text.strip ();
         if (path == "") {
-            status_label.label = "⚠ Please specify an image path.";
+            show_error ("Please specify an image path first.");
             return;
         }
 
         // Check if file already exists
         var file = GLib.File.new_for_path (path);
         if (file.query_exists ()) {
-            status_label.label = "⚠ File already exists. Choose a different path.";
+            show_error (@"File already exists:\n$(path)\n\nChoose a different path.");
             return;
         }
 
@@ -162,6 +162,7 @@ public class DiskImageWizard : Gtk.Dialog {
     private void create_image () {
         var path = path_entry.text.strip ();
         if (path == "") {
+            show_error ("Please specify an image path first.");
             return;
         }
 
@@ -199,7 +200,6 @@ public class DiskImageWizard : Gtk.Dialog {
                 // Close dialog after short delay
                 GLib.Timeout.add_seconds (1, () => {
                     response (-5); // GTK_RESPONSE_OK
-                    close ();
                     return false;
                 });
             } else {
@@ -210,5 +210,17 @@ public class DiskImageWizard : Gtk.Dialog {
             status_label.label = @"✗ Failed to run qemu-img: $(e.message)";
             create_button.sensitive = true;
         }
+    }
+
+    /** Show an error in the status label and as an alert dialog. */
+    private void show_error (string message) {
+        status_label.label = @"⚠ $(message)";
+        var dialog = new Gtk.AlertDialog ("Cannot Create Image");
+        dialog.set_detail (message);
+        var buttons = new string[] { "OK" };
+        dialog.set_buttons (buttons);
+        dialog.choose.begin (this, null, (obj, res) => {
+            try { dialog.choose.end (res); } catch (GLib.Error e) {}
+        });
     }
 }

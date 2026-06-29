@@ -54,8 +54,8 @@ sudo apt install -y \
   valac libgtk-4-dev libjson-glib-dev
 ```
 > **Note:** The manager requires Vala ≥0.56, GTK4 ≥4.10, and json-glib ≥1.6.
-> It is built only when `--build-manager` is enabled (auto by default if
-> Vala and GTK4 are detected). Skip this if you don't need the GUI.
+> It is built as a **standalone Meson project** under `manager/` (see
+> §3.2). The parent QEMU build does not pull it in anymore.
 
 The configure invocation in §2 explicitly disables: `--user / --linux-user /
 --bsd-user`, `--docs`, `--guest-agent`, `--qga-vss`, `--rust`, `--plugins`,
@@ -85,7 +85,7 @@ mkdir build && cd build
   --disable-rust --disable-plugins --disable-tcg-interpreter \
   --audio-drv-list='alsa,pa,pipewire,oss,sdl' \
   --enable-kvm --enable-whpx \
-  --enable-guest-tools --enable-vm-manager \
+  --enable-guest-tools \
   --disable-virtfs --disable-vhost-user \
   --disable-vfio-user-server --disable-libvduse --disable-vduse-blk-export \
   --disable-rbd --disable-libiscsi --disable-libnfs --disable-libssh \
@@ -130,7 +130,9 @@ multi-core host.
 - `qemu-img`, `qemu-io`, `qemu-nbd` — disk-image utilities
 - `qemu-keymap`, `qemu-edid`, `qemu-bridge-helper`, `qemu-pr-helper`,
   `qemu-vmsr-helper`, `storage-daemon/qemu-storage-daemon`
-- `qemu98-manager` — VM Manager GUI (if Vala/GTK4 detected; see §3.1)
+- `qemu98-manager` — This GUI is **not** built by the QEMU build; build
+  it separately via the standalone Meson project under `manager/`
+  (see §3.2).
 
 `make install` drops everything into `${prefix}/bin/`.
 
@@ -183,30 +185,38 @@ system-installed DDK, compiles `HYPBACK.VXD`, and installs it to
 
 Full details: `guest-tools/README.md`.
 
-### 3.2 Building the VM Manager
+### 3.2 Building the VM Manager (standalone)
 
-The QEMU98 Manager is built automatically when Vala and GTK4 are detected.
-Control it via the meson option:
+The QEMU98 Manager is a **standalone Meson project** that lives in
+`manager/` at the repo root. It is built independently from the parent
+QEMU build:
 
 ```bash
-# Enable explicitly (error if dependencies missing)
-meson setup build --build-manager=enabled
-
-# Disable explicitly (skip manager build)
-meson setup build --build-manager=disabled
+cd manager
+meson setup build
+ninja -C build
 ```
-
-The default is `auto`: builds the manager if `valac`, `libgtk-4-dev`, and
-`libjson-glib-dev` are found, silently skips otherwise.
 
 Verify it built:
 ```bash
-./build/qemu98-manager --version
-# or just launch it:
-./build/qemu98-manager
+./build/qemu98-manager --help   # exits non-zero (we never added --help)
+./build/qemu98-manager           # launches the GUI
 ```
 
-Full architecture: `qemu98-docs/VM_MANAGER.md`.
+The unit-test suite:
+```bash
+meson test -C build
+```
+
+The manager does **not** depend on having a working QEMU build on disk
+to compile — it talks to QEMU at runtime via QMP and shell-out to
+`qemu-img`. If `qemu-system-i386` is not on `$PATH` the GUI starts but
+VM launches will fail with a clear error.
+
+Building the GUI does not require `--build-manager` or `--enable-vm-manager`
+flags anymore — those were removed when the manager was detached from
+the parent's meson.build. See `qemu98-docs/VM_MANAGER.md` for the
+architectural rationale.
 
 ---
 

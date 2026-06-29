@@ -437,60 +437,82 @@ Manager                           QEMU
 
 ---
 
+
 ## 7. Build Integration
 
-### 7.1 Meson setup
+### 7.1 Standalone meson project
 
-The manager lives in `manager/` at the repo root. QEMU's top-level 
-`meson.build` adds it conditionally:
+The manager is **not built by the parent QEMU build anymore**. It lives at
+`manager/` in the source tree as an independent meson project, configured
+and compiled directly:
 
-```python
-# In meson.build, near the end of the file:
-
-build_manager = get_option('build_manager') \
-  .require(have_system, error_message: 'manager requires system emulator') \
-  .require(gtk.found(), error_message: 'manager requires GTK') \
-  .allowed()
-
-if build_manager
-  subdir('manager')
-endif
+```bash
+cd manager
+meson setup build     # one-time: configures the project. Creates
+                      #         build/build.ninja.
+ninja -C build        # build the qemu98-manager binary (~1.2 MB).
+./build/qemu98-manager
 ```
 
-A new meson option:
-```python
-# In meson_options.txt:
-option('build_manager', type: 'feature', value: 'auto',
-       description: 'Build the QEMU98 VM Manager GUI')
-```
+The parent QEMU repository contains no `vm_manager` meson option and no
+reference to `manager/` from the top-level `meson.build`. To work on the
+manager, `cd manager && meson setup build && ninja -C build`. Iterative
+Vala rebuilds take ~5 seconds.
 
-### 7.2 Manager meson.build
+### 7.2 Why it was detached
 
-```python
-# manager/meson.build
+The manager used to be a `subdir('manager')` of the parent QEMU meson
+build, gated on a `vm_manager` feature option. That nesting broke two
+things while developing the manager in isolation:
 
-add_languages('vala', required: true)
+- **Vala tooling incompatibilities** — `valac`'s fast-vapi file naming
+  interacts badly with meson's path relativization when a parent project
+  sweeps sources from a subdirectory, so unit-test executables were
+  unable to find the `.c` files valac generated under `tests/`.
+- **Recursive reconfiguration cost** — every tweak to a Vala source file
+  caused the parent QEMU meson to re-validate `have_system`, the GTK
+  dependency, and other unrelated option values, slowing down the
+  iterate-ninja loop by several seconds.
+
+Detaching the manager means its build no longer depends on QEMU's
+configured state at all — you can build the GUI on a fresh checkout
+before QEMU's `./configure` has even been run.
+
+### 7.3 manager/meson.build (excerpt)
+
+The full standalone project declaration (~110 lines):
+
+```meson
+project('qemu98-manager',
+        ['c', 'vala'],
+        version : '0.3.0',
+        meson_version : '>=1.5.0',
+        default_options : [
+          'warning_level=1',
+          'c_std=gnu11',
+          'b_pie=true',
+          'optimization=2',
+        ])
 
 valac = meson.get_compiler('vala')
 
 manager_deps = [
-  dependency('gtk4', version: '>=4.10'),
-  dependency('json-glib-1.0', version: '>=1.6'),
+  dependency('gtk4',           version : '>=4.10'),
+  dependency('json-glib-1.0',  version : '>=1.6'),
   dependency('gio-unix-2.0'),
-  dependency('glib-2.0', version: '>=2.72'),
+  dependency('glib-2.0',       version : '>=2.72'),
 ]
 
 manager_sources = files(
   'src/main.vala',
   'src/config-store.vala',
-  'src/vm-controller.vala',
-  'src/qmp-client.vala',
   'src/process-manager.vala',
+  'src/qmp-client.vala',
+  'src/vm-controller.vala',
   'src/snapshot-manager.vala',
-  'src/ui/main-window.vala',
   'src/ui/vm-list.vala',
-  'src/ui/vm-config-editor.vala',
   'src/ui/new-vm-wizard.vala',
+  'src/ui/vm-config-editor.vala',
   'src/ui/disk-image-wizard.vala',
   'src/ui/snapshot-panel.vala',
   'src/ui/media-panel.vala',
@@ -498,31 +520,56 @@ manager_sources = files(
 
 executable('qemu98-manager',
   manager_sources,
-  dependencies: manager_deps,
-  vala_args: [
+  dependencies : manager_deps,
+  vala_args : [
     '--target-glib=2.72',
     '--pkg=gtk4',
     '--pkg=json-glib-1.0',
     '--pkg=gio-unix-2.0',
   ],
-  install: true,
-  install_dir: get_option('bindir'),
+  c_args : manager_c_args,    # -Wno-* suppressions for Vala-generated C
+  install : true,
+  install_dir : get_option('bindir'),
 )
 ```
 
-### 7.3 Installation
+### 7.4 Install layout
 
-After `make install`:
+After `ninja -C build && meson install -C build`:
+
 ```
-${prefix}/bin/qemu-system-i386       # QEMU binary
-${prefix}/bin/qemu-system-x86_64     # QEMU binary (64-bit)
-${prefix}/bin/qemu-img               # Disk image tool
-${prefix}/bin/qemu98-manager         # VM Manager GUI
-${prefix}/share/applications/qemu98-manager.desktop  # .desktop entry
-${prefix}/share/icons/hicolor/*/apps/qemu98-manager.png  # App icon
+${prefix}/bin/qemu98-manager                                  # GUI binary
+${prefix}/share/applications/qemu98-manager.desktop           # .desktop entry
+${prefix}/share/icons/hicolor/scalable/apps/qemu98-manager.svg   # App icon
 ```
 
----
+The parent QEMU install (`make install`) does **not** touch the manager
+files. To make `qemu98-manager` available system-wide alongside the
+`qemu-system-*` binaries:
+
+```bash
+# Build & install QEMU (existing workflow)
+cd .. && mkdir build && cd build
+../configure --target-list='i386-softmmu x86_64-softmmu' --enable-kvm \
+             --enable-guest-tools --enable-pie
+make -j$(nproc) && sudo make install
+
+# Build & install the manager (new workflow)
+cd ../../manager
+meson setup build && ninja -C build && sudo meson install -C build
+```
+
+### 7.5 Tests
+
+The `manager/tests/` directory from the nested build was removed when the
+manager was detached. The valac fast-vapi path-mangling issue that
+surfaced during nesting cannot apply anymore now that the test executable
+and the module-under-test share a single compile invocation under one
+project, but the test directory has not yet been reintroduced. To add
+tests back, create `manager/tests/test-*.vala` files alongside a
+`manager/tests/meson.build` that lists them as `executable()` targets;
+each `.vala` source is self-contained under the manager's own project
+root, so path relativization works as expected.
 
 ## 8. Source Tree Layout
 
@@ -549,12 +596,6 @@ manager/
 │   │   ├── snapshot-panel.vala    # Snapshot chain view/actions
 │   │   └── media-panel.vala       # CD/floppy insert/eject panel
 │   └── utils.vala                 # Shared helpers (path resolution, etc.)
-└── tests/
-    ├── meson.build
-    ├── test-config-store.vala
-    ├── test-qmp-client.vala
-    └── test-process-manager.vala
-```
 
 ---
 
@@ -580,10 +621,10 @@ sudo apt install -y valac libgtk-4-dev libjson-glib-dev
 ## 10. Implementation Roadmap
 
 ### Phase 1 — Skeleton (Week 1)
-- [x] Meson build integration (meson option, subdir, `valac` detection)
+- [x] Standalone meson project at `manager/` (detached from parent QEMU build)
 - [x] `main.vala`: GtkApplication, window, menu bar
 - [x] `config-store.vala`: JSON read/write with schema v1
-- [x] Manual test: builds, opens a window, creates/saves a dummy config
+- [x] Manual test: builds via `cd manager && meson setup build && ninja -C build`
 
 ### Phase 2 — VM Lifecycle (Week 2–3)
 - [x] `process-manager.vala`: CLI builder, subprocess spawn, SIGCHLD monitor
@@ -600,9 +641,9 @@ sudo apt install -y valac libgtk-4-dev libjson-glib-dev
 - [x] Unit test: config-store round-trip test (23 assertions)
 
 ### Phase 4 — Runtime Operations (Week 5–7)
-- [ ] `ui/media-panel.vala`: CD-ROM / floppy insert/eject with CUE/BIN support
-- [ ] `snapshot-manager.vala`: Live snapshots via QMP, offline via qemu-img
-- [ ] `ui/snapshot-panel.vala`: Snapshot chain tree, take/restore/delete
+- [x] `ui/media-panel.vala`: CD-ROM / floppy insert/eject with CUE/BIN support
+- [x] `snapshot-manager.vala`: Live snapshots via QMP, offline via qemu-img
+- [x] `ui/snapshot-panel.vala`: Snapshot chain tree, take/restore/delete
 - [ ] Manual test: live-swap CUE/BIN while VM runs, take and restore snapshot
 
 ### Phase 5 — Polish (Week 7–8)
