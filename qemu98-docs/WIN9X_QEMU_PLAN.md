@@ -936,8 +936,8 @@ an estimate of self-contained scope.
 
 ### VM Manager (parallel track — see `VM_MANAGER.md` §10)
 - [x] **M1**: Skeleton — meson build, GtkApplication, window, ConfigStore. (1 week) ✅
-- [ ] **M2**: VM Lifecycle — ProcessManager, QmpClient, VmController. (1–2 weeks)
-- [ ] **M3**: Configuration UI — Wizard, editor, disk image helper. (2 weeks)
+- [x] **M2**: VM Lifecycle — ProcessManager, QmpClient, VmController. (1–2 weeks) ✅
+- [x] **M3**: Configuration UI — Wizard, editor, disk image helper. (2 weeks) ✅
 - [ ] **M4**: Runtime Operations — Media panel, snapshot manager. (2 weeks)
 - [ ] **M5**: Polish — .desktop, icons, error handling, tests. (1 week)
 

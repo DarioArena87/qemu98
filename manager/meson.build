@@ -40,6 +40,9 @@ manager_sources = files(
   'src/qmp-client.vala',
   'src/vm-controller.vala',
   'src/ui/vm-list.vala',
+  'src/ui/new-vm-wizard.vala',
+  'src/ui/vm-config-editor.vala',
+  'src/ui/disk-image-wizard.vala',
 )
 
 # ---- Vala compiler flags ----
@@ -87,3 +90,6 @@ install_data('data/icons/qemu98-manager.svg',
              install_dir: manager_icondir / 'hicolor' / 'scalable' / 'apps')
 
 summary('QEMU98 Manager', 'enabled', bool_yn: true, section: 'Win9x')
+
+# ---- Tests ----
+subdir('tests')

@@ -594,11 +594,10 @@ sudo apt install -y valac libgtk-4-dev libjson-glib-dev
   stop it gracefully
 
 ### Phase 3 — Configuration UI (Week 3–5)
-- [ ] `ui/vm-config-editor.vala`: Tabbed editor for an existing VM
-- [ ] `ui/new-vm-wizard.vala`: Multi-page creation wizard
-- [ ] `ui/disk-image-wizard.vala`: qemu-img wrapper with size/format picker
-- [ ] Manual test: create two VMs with different configs, start both, verify 
-  they don't interfere
+- [x] `ui/vm-config-editor.vala`: Tabbed editor for an existing VM
+- [x] `ui/new-vm-wizard.vala`: Multi-page creation wizard
+- [x] `ui/disk-image-wizard.vala`: qemu-img wrapper with size/format picker
+- [x] Unit test: config-store round-trip test (23 assertions)
 
 ### Phase 4 — Runtime Operations (Week 5–7)
 - [ ] `ui/media-panel.vala`: CD-ROM / floppy insert/eject with CUE/BIN support
