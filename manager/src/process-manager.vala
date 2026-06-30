@@ -71,7 +71,7 @@ public class ProcessManager : GLib.Object {
         var machine = config.get_object_member ("machine");
         var accel = machine.get_string_member ("accelerator");
         args.add ("-machine");
-        args.add (@"$(machine.get_string_member ("type")),accel=$(accel)");
+        args.add (@"$(machine.get_string_member("type")),accel=$(accel)");
 
         args.add ("-cpu");
         args.add (machine.get_string_member ("cpu"));
@@ -122,55 +122,54 @@ public class ProcessManager : GLib.Object {
                 var dev_type = dev.get_string_member ("type");
 
                 switch (dev_type) {
-                    case "VGA":
-                        args.add ("-vga");
-                        args.add ("std");
-                        break;
+                case "VGA" :
+                    args.add ("-vga");
+                    args.add ("std");
+                    break;
 
-                    case "voodoo3":
-                        args.add ("-device");
-                        var vram = dev.has_member ("vram_mb") ?
-                            dev.get_int_member ("vram_mb").to_string () : "64";
-                        args.add (@"voodoo3,vram=$(vram)");
-                        break;
+                case "voodoo3":
+                    args.add ("-device");
+                    var vram = dev.has_member ("vram_mb") ?
+                        dev.get_int_member ("vram_mb").to_string () : "64";
+                    args.add (@"voodoo3,vram=$(vram)");
+                    break;
 
-                    case "hypback":
-                        args.add ("-device");
-                        var hid = dev.has_member ("id") ?
-                            dev.get_string_member ("id") : "hbe0";
-                        args.add (@"hypback,id=$(hid)");
-                        break;
+                case "hypback":
+                    args.add ("-device");
+                    var hid = dev.has_member ("id") ?
+                        dev.get_string_member ("id") : "hbe0";
+                    args.add (@"hypback,id=$(hid)");
+                    break;
 
-                    case "sb16":
-                        args.add ("-device");
-                        var sb_str = "sb16";
-                        if (dev.has_member ("irq"))
-                            sb_str += @",irq=$(dev.get_int_member ("irq"))";
-                        if (dev.has_member ("dma"))
-                            sb_str += @",dma=$(dev.get_int_member ("dma"))";
-                        if (dev.has_member ("dma16"))
-                            sb_str += @",dma16=$(dev.get_int_member ("dma16"))";
-                        sb_str += ",audiodev=audio0";
-                        args.add (sb_str);
-                        break;
+                case "sb16":
+                    args.add ("-device");
+                    var sb_str = "sb16";
+                    if (dev.has_member ("irq"))
+                        sb_str += @",irq=$(dev.get_int_member ("irq"))";
+                    if (dev.has_member ("dma"))
+                        sb_str += @",dma=$(dev.get_int_member ("dma"))";
+                    if (dev.has_member ("dma16"))
+                        sb_str += @",dma16=$(dev.get_int_member ("dma16"))";
+                    sb_str += ",audiodev=audio0";
+                    args.add (sb_str);
+                    break;
 
-                    case "ne2k_pci":
-                        var netdev_id = dev.has_member ("netdev") ?
-                            dev.get_string_member ("netdev") : "net0";
-                        args.add ("-device");
-                        args.add (@"ne2k_pci,netdev=$(netdev_id)");
-                        break;
+                case "ne2k_pci":
+                    var netdev_id = dev.has_member ("netdev") ?
+                        dev.get_string_member ("netdev") : "net0";
+                    args.add ("-device");
+                    args.add (@"ne2k_pci,netdev=$(netdev_id)");
+                    break;
 
-                    case "e1000":
-                        var netdev_id2 = dev.has_member ("netdev") ?
-                            dev.get_string_member ("netdev") : "net0";
-                        args.add ("-device");
-                        args.add (@"e1000,netdev=$(netdev_id2)");
-                        break;
+                case "e1000":
+                    var netdev_id2 = dev.has_member ("netdev") ? dev.get_string_member ("netdev") : "net0";
+                    args.add ("-device");
+                    args.add (@"e1000,netdev=$(netdev_id2)");
+                    break;
 
-                    default:
-                        warning ("Unknown device type: %s", dev_type);
-                        break;
+                default:
+                    warning ("Unknown device type: %s", dev_type);
+                    break;
                 }
             }
         }
@@ -189,18 +188,15 @@ public class ProcessManager : GLib.Object {
                         for (var j = 0; j < ctrl_devices.get_length (); j++) {
                             var disk = ctrl_devices.get_object_element (j);
                             var disk_type = disk.get_string_member ("type");
-                            var disk_file = disk.has_member ("file") ?
-                                disk.get_string_member ("file") : "";
-                            var disk_format = disk.has_member ("format") ?
-                                disk.get_string_member ("format") : "raw";
+                            var disk_file = disk.has_member ("file") ? disk.get_string_member ("file") : "";
+                            var disk_format = disk.has_member ("format") ? disk.get_string_member ("format") : "raw";
 
                             args.add ("-drive");
                             var drive_str = @"file=$(disk_file),format=$(disk_format)";
 
                             // IDE/SCSI attachment
                             if (ctrl_type == "ide") {
-                                var disk_id = disk.has_member ("id") ?
-                                    disk.get_string_member ("id") : "drive0";
+                                var disk_id = disk.has_member ("id") ? disk.get_string_member ("id") : "drive0";
                                 drive_str += @",if=ide,id=$(disk_id)";
                             } else if (ctrl_type == "scsi") {
                                 drive_str += ",if=scsi";
@@ -229,8 +225,7 @@ public class ProcessManager : GLib.Object {
                     var flop = floppy.get_object_element (i);
                     if (flop.has_member ("file")) {
                         var flop_file = flop.get_string_member ("file");
-                        var flop_id = flop.has_member ("id") ?
-                            flop.get_string_member ("id") : @"fda$(i)";
+                        var flop_id = flop.has_member ("id") ? flop.get_string_member ("id") : @"fda$(i)";
                         args.add ("-drive");
                         args.add (@"file=$(flop_file),format=raw,if=floppy,id=$(flop_id)");
                     }
@@ -267,10 +262,7 @@ public class ProcessManager : GLib.Object {
         args.add ("none");
 
         // PID file
-        pidfile_path = GLib.Path.build_filename (
-            GLib.Environment.get_user_cache_dir (), "qemu98",
-            @"pid-$(config.get_string_member ("uuid")).pid"
-        );
+        pidfile_path = GLib.Path.build_filename (GLib.Environment.get_user_cache_dir (), "qemu98", @"pid-$(config.get_string_member ("uuid")).pid");
         args.add ("-pidfile");
         args.add (pidfile_path);
 
@@ -299,10 +291,7 @@ public class ProcessManager : GLib.Object {
 
         message ("Launching QEMU: %s", string.joinv (" ", argv));
 
-        process = new GLib.Subprocess.newv (
-            argv,
-            GLib.SubprocessFlags.NONE
-        );
+        process = new GLib.Subprocess.newv (argv, GLib.SubprocessFlags.NONE);
 
         pid = int.parse (process.get_identifier () ?? "0");
         running = true;
@@ -345,7 +334,7 @@ public class ProcessManager : GLib.Object {
         GLib.Timeout.add_seconds (10, () => {
             if (running) {
                 warning ("QEMU did not exit after SIGTERM, sending SIGKILL");
-                process.send_signal (9);  // SIGKILL
+                process.send_signal (9); // SIGKILL
             }
             return false; // stop the timeout
         });
@@ -367,7 +356,8 @@ public class ProcessManager : GLib.Object {
         if (file.query_exists ()) {
             try {
                 file.delete ();
-            } catch (GLib.Error e) {
+            }
+            catch (GLib.Error e) {
                 debug ("Failed to remove QMP socket: %s", e.message);
             }
         }
