@@ -215,7 +215,7 @@ VM launches will fail with a clear error.
 
 Building the GUI does not require `--build-manager` or `--enable-vm-manager`
 flags anymore — those were removed when the manager was detached from
-the parent's meson.build. See `qemu98-docs/VM_MANAGER.md` for the
+the parent's meson.build. See `manager/README.md` for the
 architectural rationale.
 
 ---

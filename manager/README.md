@@ -596,6 +596,7 @@ manager/
 │   │   ├── snapshot-panel.vala    # Snapshot chain view/actions
 │   │   └── media-panel.vala       # CD/floppy insert/eject panel
 │   └── utils.vala                 # Shared helpers (path resolution, etc.)
+```
 
 ---
 
