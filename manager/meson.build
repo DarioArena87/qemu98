@@ -17,11 +17,11 @@ project('qemu98-manager',
         version : '0.3.0',
         meson_version : '>=1.5.0',
         default_options : [
-          'warning_level=1',
-          'c_std=gnu11',
-          'b_colorout=auto',
-          'b_pie=true',
-          'optimization=2',
+            'warning_level=1',
+            'c_std=gnu11',
+            'b_colorout=auto',
+            'b_pie=true',
+            'optimization=2',
         ])
 
 # Retrieve the Vala compiler instance (project() above already declared
@@ -41,10 +41,10 @@ gio_unix_dep = dependency('gio-unix-2.0')
 glib_dep = dependency('glib-2.0', version : '>=2.72')
 
 manager_deps = [
-  gtk4_dep,
-  json_glib_dep,
-  gio_unix_dep,
-  glib_dep,
+    gtk4_dep,
+    json_glib_dep,
+    gio_unix_dep,
+    glib_dep,
 ]
 
 # ---- Source files ----
@@ -52,28 +52,34 @@ manager_deps = [
 # Phase 2: process manager, QMP client, VM controller, UI sidebar
 # Phase 3: wizard, config editor, disk image wizard
 # Phase 4: snapshot manager, snapshot panel, media panel
+# Phase 5: app-level configuration + preferences dialog
 
 manager_sources = files(
-  'src/main.vala',
-  'src/config-store.vala',
-  'src/process-manager.vala',
-  'src/qmp-client.vala',
-  'src/vm-controller.vala',
-  'src/snapshot-manager.vala',
-  'src/ui/vm-list.vala',
-  'src/ui/new-vm-wizard.vala',
-  'src/ui/vm-config-editor.vala',
-  'src/ui/disk-image-wizard.vala',
-  'src/ui/snapshot-panel.vala',
-  'src/ui/media-panel.vala',
+    'src/main.vala',
+    'src/app-config.vala',
+    'src/config-store.vala',
+    'src/process-manager.vala',
+    'src/qmp-client.vala',
+    'src/vm-controller.vala',
+    'src/snapshot-manager.vala',
+    'src/ui/menu-bar.vala',
+    'src/ui/missing-binary-bar.vala',
+    'src/ui/main-content.vala',
+    'src/ui/vm-list.vala',
+    'src/ui/prefs-dialog.vala',
+    'src/ui/vm-config-editor.vala',
+    'src/ui/snapshot-panel.vala',
+    'src/ui/media-panel.vala',
+    'src/ui/wizards/new-vm-wizard.vala',
+    'src/ui/wizards/disk-image-wizard.vala',
 )
 
 # ---- Vala compiler flags ----
 vala_args = [
-  '--target-glib=2.72',
-  '--pkg=gtk4',
-  '--pkg=json-glib-1.0',
-  '--pkg=gio-unix-2.0',
+    '--target-glib=2.72',
+    '--pkg=gtk4',
+    '--pkg=json-glib-1.0',
+    '--pkg=gio-unix-2.0',
 ]
 
 # ---- C compiler warnings ----
@@ -83,23 +89,23 @@ vala_args = [
 # pointer-to-int casts), not fixable in Vala source. Suppressed here for
 # the manager regardless of host build flags.
 manager_c_args = [
-  '-Wno-unused-variable',
-  '-Wno-unused-function',
-  '-Wno-unused-but-set-variable',
-  '-Wno-incompatible-pointer-types',
-  '-Wno-deprecated-declarations',
-  '-Wno-discarded-qualifiers',
-  '-Wno-pointer-to-int-cast',
+    '-Wno-unused-variable',
+    '-Wno-unused-function',
+    '-Wno-unused-but-set-variable',
+    '-Wno-incompatible-pointer-types',
+    '-Wno-deprecated-declarations',
+    '-Wno-discarded-qualifiers',
+    '-Wno-pointer-to-int-cast',
 ]
 
 # ---- Executable ----
 executable('qemu98-manager',
-  manager_sources,
-  dependencies : manager_deps,
-  vala_args : vala_args,
-  c_args : manager_c_args,
-  install : true,
-  install_dir : get_option('bindir'),
+           manager_sources,
+           dependencies : manager_deps,
+           vala_args : vala_args,
+           c_args : manager_c_args,
+           install : true,
+           install_dir : get_option('bindir'),
 )
 
 # ---- Data files ----

@@ -72,7 +72,12 @@ public class VmController : GLib.Object {
     // ---- Construction ----
 
     /**
-     * @param qemu_binary  Full path to qemu-system-i386
+     * @param qemu_binary  Full path to qemu-system-i386, or empty
+     *                     string if none is currently available. The
+     *                     empty-string sentinel is used when the
+     *                     application starts without a usable binary;
+     *                     start() in main.vala refuses in that case
+     *                     before any QEMU process is spawned.
      * @param config       VM configuration from ConfigStore
      */
     public VmController(string qemu_binary, Json.Object config) {

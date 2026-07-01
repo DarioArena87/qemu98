@@ -23,9 +23,22 @@ public class DiskImageWizard : Gtk.Dialog {
 
     public string? image_path { get; private set; default = null; }
 
+    /**
+     * Optional folder used as the initial path suggestion. When non-null
+     * the wizard pre-fills the entry with <default_folder>/disk.qcow2
+     * and starts the Browse dialog in that location.
+     */
+    private string? default_folder = null;
+
     // ---- Construction ----
 
-    public DiskImageWizard (Gtk.Window parent) {
+    /**
+     * @param parent          Parent window (for modal attachment)
+     * @param default_folder  Optional folder hint for the suggested
+     *                        initial path and the Browse dialog's
+     *                        starting directory.
+     */
+    public DiskImageWizard (Gtk.Window parent, string? default_folder = null) {
         Object(
                 title: "Create Disk Image",
                 transient_for: parent,
@@ -35,6 +48,7 @@ public class DiskImageWizard : Gtk.Dialog {
                 default_height: 250
         );
 
+        this.default_folder = default_folder;
         build_ui();
     }
 
@@ -53,9 +67,16 @@ public class DiskImageWizard : Gtk.Dialog {
 
         var path_row = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
         path_entry = new Gtk.Entry() {
-            placeholder_text = "~/qemu98-images/vm-disk.qcow2",
+            placeholder_text = default_folder != null
+                ? @"$(default_folder)/disk.qcow2"
+                : "~/qemu98-images/vm-disk.qcow2",
             hexpand = true
         };
+        // Pre-fill with the chosen default folder so the user sees a
+        // usable starting point on first paint (or on Enter).
+        if (default_folder != null && default_folder != "") {
+            path_entry.text = GLib.Path.build_filename(default_folder, "disk.qcow2");
+        }
         path_entry.activate.connect(() => { create_image(); });
         path_row.append(path_entry);
 

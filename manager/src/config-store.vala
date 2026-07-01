@@ -1,15 +1,23 @@
 /*
- * config-store.vala — VM configuration persistence
+ * config-store.vala — Per-VM configuration persistence
  *
- * Reads/writes VM definitions as JSON files in ~/.local/share/qemu98/machines/.
- * Each file is a self-contained VM definition.
+ * Reads/writes VM definitions as JSON files, one per VM. Each VM lives
+ * in its own subdirectory under the application base directory:
  *
- * Schema versioned for forward compatibility (schema_version: 1).
+ *     <base_dir>/<vm_name>/<vm_name>.json
+ *
+ * The same subdirectory also holds the VM's default disk image (see
+ * AppConfig.get_default_disk_path). Deleting a VM removes only its JSON
+ * config; any disk images are left in place.
+ *
+ * On startup, any old-style configs from ~/.local/share/qemu98/machines/
+ * are auto-migrated into the new layout.
+ *
+ * Schema versioned (schema_version: 1) for forward compatibility.
  */
-
 public class ConfigStore : GLib.Object {
 
-    private string machines_dir;
+    private string base_dir;
     private GLib.HashTable<string, Json.Object> cache;
 
     private const string SCHEMA_VERSION = "1";
@@ -21,30 +29,31 @@ public class ConfigStore : GLib.Object {
 
     // ---- Construction ----
 
-    public ConfigStore() {
-        machines_dir = GLib.Path.build_filename(
-            GLib.Environment.get_user_data_dir(),
-            "qemu98",
-            "machines"
-        );
-        cache = new GLib.HashTable<string, Json.Object> (
+    /**
+     * @param base_dir  Root directory under which each VM lives at
+     *                  <base_dir>/<vm_name>/<vm_name>.json. The manager
+     *                  passes AppConfig.get_effective_base_dir().
+     */
+    public ConfigStore(string base_dir) {
+        this.base_dir = base_dir;
+        this.cache = new GLib.HashTable<string, Json.Object> (
             GLib.str_hash, GLib.str_equal
         );
 
-        ensure_directory();
+        ensure_base_directory();
         reload();
     }
 
-    /** Create the machines directory if it doesn't exist. */
-    private void ensure_directory() {
-        var dir = GLib.File.new_for_path(machines_dir);
+    /** Create the base directory if it doesn't exist. */
+    private void ensure_base_directory() {
+        var dir = GLib.File.new_for_path(base_dir);
         if (!dir.query_exists()) {
             try {
                 dir.make_directory_with_parents();
-                message("Created config directory: %s", machines_dir);
+                message("Created base directory: %s", base_dir);
             }
             catch (GLib.Error e) {
-                critical("Failed to create config directory: %s", e.message);
+                critical("Failed to create base directory: %s", e.message);
             }
         }
     }
@@ -53,7 +62,9 @@ public class ConfigStore : GLib.Object {
     public void reload() {
         cache.remove_all();
 
-        var dir = GLib.File.new_for_path(machines_dir);
+        var dir = GLib.File.new_for_path(base_dir);
+        if (!dir.query_exists()) return;
+
         try {
             var enumerator = dir.enumerate_children(
                 "standard::*",
@@ -62,14 +73,15 @@ public class ConfigStore : GLib.Object {
 
             GLib.FileInfo info;
             while ((info = enumerator.next_file()) != null) {
-                if (info.get_file_type() == GLib.FileType.REGULAR && info.get_name().has_suffix(".json")) {
-                    var name = info.get_name().substring(0, info.get_name().length - 5); // strip .json
-                    load_config(name);
-                }
+                if (info.get_file_type() != GLib.FileType.DIRECTORY) continue;
+                var vm_name = info.get_name();
+                // Only consider subdirs that contain the per-VM JSON file.
+                if (GLib.FileUtils.test(get_config_path(vm_name), GLib.FileTest.EXISTS))
+                    load_config(vm_name);
             }
         }
         catch (GLib.Error e) {
-            warning("Failed to enumerate config directory: %s", e.message);
+            warning("Failed to enumerate base directory: %s", e.message);
         }
     }
 
@@ -108,9 +120,22 @@ public class ConfigStore : GLib.Object {
 
     /** Save a VM configuration to disk. */
     public bool save_config(string vm_name, Json.Object config) {
-    // Ensure schema version
+        // Ensure schema version
         if (!config.has_member("schema_version")) {
             config.set_string_member("schema_version", SCHEMA_VERSION);
+        }
+
+        // Ensure the per-VM subdirectory exists; refuses to save if it
+        // cannot be created (likely a permissions problem).
+        try {
+            var vm_dir = GLib.File.new_for_path(get_vm_dir(vm_name));
+            if (!vm_dir.query_exists())
+                vm_dir.make_directory_with_parents();
+        }
+        catch (GLib.Error e) {
+            warning("Failed to create VM directory for '%s': %s",
+                    vm_name, e.message);
+            return false;
         }
 
         var path = get_config_path(vm_name);
@@ -142,7 +167,13 @@ public class ConfigStore : GLib.Object {
         return cache[vm_name];
     }
 
-    /** Delete a VM configuration from disk and cache. */
+    /**
+     * Delete a VM configuration from disk and cache.
+     *
+     * Only removes the JSON file; the per-VM subdirectory and any disk
+     * images left inside it are preserved so the user can manually
+     * archive or trash them.
+     */
     public bool delete_config(string vm_name) {
         var path = get_config_path(vm_name);
         var file = GLib.File.new_for_path(path);
@@ -159,19 +190,40 @@ public class ConfigStore : GLib.Object {
             return true;
         }
         catch (GLib.Error e) {
-            warning("Failed to delete config '%s': %s", path, e.message);
+            warning("Failed to delete config '%s': %s", vm_name, e.message);
             return false;
         }
     }
 
-    /** List all known VM names from the cache. */
+    /** List all known VM names from the cache, sorted alphabetically. */
     public string[] list_vms() {
         var names = new string[cache.size()];
         int i = 0;
         cache.for_each((k, v) => {
             names[i++] = (string) k;
         });
+
+        // Sort for deterministic order: hash-table iteration is
+        // arbitrary, and directory enumeration order from reload()
+        // differs from in-session creation order. A simple bubble
+        // sort gives users a stable, predictable sidebar without
+        // depending on GLib API version (qsort_with_data<T> needs
+        // glib >= 2.76; the project targets 2.72).
+        for (int j = 0; j < (int) names.length - 1; j++) {
+            for (int k = 0; k < (int) names.length - 1 - j; k++) {
+                if (GLib.strcmp(names[k], names[k+1]) > 0) {
+                    var tmp = names[k];
+                    names[k] = names[k+1];
+                    names[k+1] = tmp;
+                }
+            }
+        }
         return names;
+    }
+
+    /** Directory where the given VM's files live. */
+    public string get_vm_dir(string vm_name) {
+        return GLib.Path.build_filename(base_dir, vm_name);
     }
 
     /** Create a minimal default VM configuration. */
@@ -235,6 +287,7 @@ public class ConfigStore : GLib.Object {
 
     /** Get the full path for a VM config file. */
     private string get_config_path(string vm_name) {
-        return GLib.Path.build_filename(machines_dir, vm_name + ".json");
+        return GLib.Path.build_filename(
+            get_vm_dir(vm_name), vm_name + ".json");
     }
 }

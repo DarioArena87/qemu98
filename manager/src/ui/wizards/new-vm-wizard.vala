@@ -50,8 +50,15 @@ public class NewVmWizard : Gtk.Dialog {
     private Gtk.Label review_label;
 
     private ConfigStore config_store;
+    private AppConfig app_config;
 
-    public NewVmWizard (ConfigStore config_store) {
+    /**
+     * @param config_store  Per-VM config persistence layer
+     * @param app_config    Application-level configuration, used to
+     *                      compute the default disk image location
+     *                      under the user's base directory.
+     */
+    public NewVmWizard(ConfigStore config_store, AppConfig app_config) {
         Object(
                 title: "Create New Virtual Machine",
                 modal: true,
@@ -60,6 +67,7 @@ public class NewVmWizard : Gtk.Dialog {
                 default_height: 450
         );
         this.config_store = config_store;
+        this.app_config = app_config;
         build_ui();
     }
 
@@ -88,6 +96,11 @@ public class NewVmWizard : Gtk.Dialog {
         page_keys = { "name", "hardware", "storage", "display", "network", "review" };
         content.append(stack);
 
+        // Re-seed the storage default whenever the Storage page is
+        // shown, so the user always sees a fresh suggestion based on
+        // whatever name they've typed by that point.
+        stack.notify["visible-child-name"].connect(on_stack_page_changed);
+
         // Navigation buttons
         var nav = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
         nav.halign = Gtk.Align.END;
@@ -105,6 +118,27 @@ public class NewVmWizard : Gtk.Dialog {
         content.append(nav);
 
         stack.visible_child_name = "name";
+    }
+
+    /**
+     * Re-seed the storage-page default whenever the user navigates
+     * to a different page. As long as the user hasn't customized the
+     * disk path manually, we replace it with a fresh default derived
+     * from the current VM name.
+     */
+    private void on_stack_page_changed() {
+        if (stack.visible_child_name == "storage") {
+            // Only rewrite if the entry is empty or still showing a
+            // previous auto-fill; this preserves any user edits.
+            var current = disk_path_entry != null
+                ? disk_path_entry.text.strip() : "";
+            var new_default = compute_default_disk_path();
+            if (new_default != "" &&
+                (current == "" || current == last_disk_default)) {
+                disk_path_entry.text = new_default;
+                last_disk_default = new_default;
+            }
+        }
     }
 
     // ---- Page builders ----
@@ -146,7 +180,10 @@ public class NewVmWizard : Gtk.Dialog {
     private Gtk.Widget build_name_page() {
         var box = make_page_box();
         box.append(section_label("Name And Operating System"));
-        name_entry = new Gtk.Entry() { placeholder_text = "example: My Windows 98 VM", hexpand = true };
+        name_entry = new Gtk.Entry() { text = "My New VM", hexpand = true };
+        // Keep the storage-page default disk path in sync with the name
+        // as long as the user hasn't customized it manually.
+        name_entry.changed.connect(on_name_changed);
         box.append(name_entry);
         box.append(make_labeled_dropdown(
                 out os_dropdown,
@@ -155,6 +192,39 @@ public class NewVmWizard : Gtk.Dialog {
         ));
         return box;
     }
+
+    /**
+     * Name entry changed handler — recomputes the suggested default
+     * disk image path and updates disk_path_entry only if it still
+     * shows the model's auto-generated default (the comparison is on
+     * derived-from-name strings). Once the user types a custom path,
+     * this auto-fill stops so we never overwrite their input.
+     */
+    private void on_name_changed() {
+        if (disk_path_entry == null) return;
+        var new_default = compute_default_disk_path();
+        // We treat the user's input as "still default" while the entry
+        // is empty OR while it equals our last computed default for
+        // the previous name. Tracking the previous default lets us
+        // update live without clobbering a user edit.
+        var current = disk_path_entry.text.strip();
+        if (current == "" || current == last_disk_default) {
+            if (new_default != "") {
+                disk_path_entry.text = new_default;
+                last_disk_default = new_default;
+            }
+        }
+    }
+
+    /** Compute the suggested default disk path for the current vm name. */
+    private string compute_default_disk_path() {
+        var name = name_entry != null ? name_entry.text.strip() : "";
+        if (name == "" || app_config == null) return "";
+        return app_config.get_default_disk_path(name);
+    }
+
+    /** Tracks the most recently auto-filled default for live updates. */
+    private string last_disk_default = "";
 
     private Gtk.Widget build_hardware_page() {
         var box = make_page_box();
@@ -178,9 +248,24 @@ public class NewVmWizard : Gtk.Dialog {
     private Gtk.Widget build_storage_page() {
         var box = make_page_box();
         box.append(section_label("Storage"));
-        box.append(new Gtk.Label("Disk Image (leave empty to skip):") { halign = Gtk.Align.START });
+        box.append(new Gtk.Label("Disk Image (leave empty to use the default):") { halign = Gtk.Align.START });
         var dr = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
-        disk_path_entry = new Gtk.Entry() { placeholder_text = "example: ~/qemu98-images/vm-disk.qcow2", hexpand = true };
+        disk_path_entry = new Gtk.Entry() {
+            // Placeholder shows the resolved base directory so the user
+            // understands where the auto-suggested path lands.
+            placeholder_text =
+                app_config != null
+                    ? app_config.get_default_disk_path(vm_name_suggestion_for_placeholder)
+                    : "<base>/<vm_name>/<kebab>.qcow2",
+            hexpand = true
+        };
+        // Seed the auto-generated default so the user sees the value
+        // immediately upon arrival on this page, not only after typing.
+        var initial_default = compute_default_disk_path();
+        if (initial_default != "") {
+            disk_path_entry.text = initial_default;
+            last_disk_default = initial_default;
+        }
         dr.append(disk_path_entry);
         var bbtn = new Gtk.Button.with_label("Browse…");
         bbtn.clicked.connect(on_browse_disk);
@@ -189,6 +274,13 @@ public class NewVmWizard : Gtk.Dialog {
         box.append(make_labeled_dropdown(out disk_format_dropdown, "Format:", "qcow2", "raw", "vhd"));
         return box;
     }
+
+    /**
+     * Placeholder name used before the user types anything. Generates
+     * the kebab form of a generic example so the placeholder hints
+     * at the convention.
+     */
+    private const string vm_name_suggestion_for_placeholder = "My New VM";
 
     private Gtk.Widget build_display_page() {
         var box = make_page_box();

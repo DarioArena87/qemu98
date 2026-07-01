@@ -48,7 +48,7 @@ public class VmConfigEditor : Gtk.Box {
 
     // ---- Construction ----
 
-    public VmConfigEditor (ConfigStore config_store) {
+    public VmConfigEditor(ConfigStore config_store) {
         Object(orientation: Gtk.Orientation.VERTICAL, spacing: 0);
 
         this.config_store = config_store;
@@ -57,10 +57,10 @@ public class VmConfigEditor : Gtk.Box {
         notebook.hexpand = true;
         notebook.vexpand = true;
 
-        notebook.append_page(build_general_tab(), new Gtk.Label ("General"));
-        notebook.append_page(build_devices_tab(), new Gtk.Label ("Devices"));
-        notebook.append_page(build_storage_tab(), new Gtk.Label ("Storage"));
-        notebook.append_page(build_network_tab(), new Gtk.Label ("Network"));
+        notebook.append_page(build_general_tab(), new Gtk.Label("General"));
+        notebook.append_page(build_devices_tab(), new Gtk.Label("Devices"));
+        notebook.append_page(build_storage_tab(), new Gtk.Label("Storage"));
+        notebook.append_page(build_network_tab(), new Gtk.Label("Network"));
 
         append(notebook);
 
@@ -120,17 +120,17 @@ public class VmConfigEditor : Gtk.Box {
 
         int row = 0;
 
-        grid.attach(new Gtk.Label ("Name:"), 0, row, 1, 1);
-        edit_name = new Gtk.Entry () { hexpand = true };
+        grid.attach(new Gtk.Label("Name:"), 0, row, 1, 1);
+        edit_name = new Gtk.Entry() { hexpand = true };
         grid.attach(edit_name, 1, row, 1, 1);
         row++;
 
-        grid.attach(new Gtk.Label ("UUID:"), 0, row, 1, 1);
-        label_uuid = new Gtk.Label ("") { halign = Gtk.Align.START, selectable = true };
+        grid.attach(new Gtk.Label("UUID:"), 0, row, 1, 1);
+        label_uuid = new Gtk.Label("") { halign = Gtk.Align.START, selectable = true };
         grid.attach(label_uuid, 1, row, 1, 1);
         row++;
 
-        var cpu_label = new Gtk.Label ("CPU:");
+        var cpu_label = new Gtk.Label("CPU:");
         grid.attach(cpu_label, 0, row, 1, 1);
         var cpu_model = new Gtk.StringList (null);
         foreach (var c in new string[] { "pentium3", "pentium2", "pentium", "486", "qemu32", "qemu64", "host" }) {
@@ -141,14 +141,14 @@ public class VmConfigEditor : Gtk.Box {
         grid.attach(combo_cpu, 1, row, 1, 1);
         row++;
 
-        grid.attach(new Gtk.Label ("RAM (MB):"), 0, row, 1, 1);
+        grid.attach(new Gtk.Label("RAM (MB):"), 0, row, 1, 1);
         var ram_adj = new Gtk.Adjustment (256, 32, 4096, 32, 64, 0);
         spin_ram = new Gtk.SpinButton (ram_adj, 1, 0);
         spin_ram.hexpand = true;
         grid.attach(spin_ram, 1, row, 1, 1);
         row++;
 
-        var accel_label = new Gtk.Label ("Accelerator:");
+        var accel_label = new Gtk.Label("Accelerator:");
         grid.attach(accel_label, 0, row, 1, 1);
         var accel_model = new Gtk.StringList (null);
         foreach (var a in new string[] { "kvm", "tcg", "whpx" }) {
@@ -248,16 +248,16 @@ public class VmConfigEditor : Gtk.Box {
         box.margin_top = 24;
         box.margin_bottom = 24;
 
-        var title = new Gtk.Label ("<b>Primary Disk</b>");
+        var title = new Gtk.Label("<b>Primary Disk</b>");
         title.use_markup = true;
         title.halign = Gtk.Align.START;
         box.append(title);
 
-        var path_label = new Gtk.Label ("Path:");
+        var path_label = new Gtk.Label("Path:");
         path_label.halign = Gtk.Align.START;
         box.append(path_label);
 
-        edit_disk = new Gtk.Entry () {
+        edit_disk = new Gtk.Entry() {
             hexpand = true,
             placeholder_text = "~/qemu98-images/disk.qcow2"
         };
@@ -282,22 +282,23 @@ public class VmConfigEditor : Gtk.Box {
         }
 
         var storage = config.get_object_member("storage");
-        if (storage.has_member("controllers")) {
-            var controllers = storage.get_array_member("controllers");
-            if (controllers.get_length() > 0) {
-                var ctrl = controllers.get_object_element(0);
-                if (ctrl.has_member("devices")) {
-                    var devs = ctrl.get_array_member("devices");
-                    if (devs.get_length() > 0) {
-                        var disk = devs.get_object_element(0);
-                        edit_disk.text = disk.has_member("file") ?
-                        disk.get_string_member("file") : "";
-                        label_disk_fmt.label = disk.has_member("format") ?
-                        disk.get_string_member("format") : "raw";
-                    }
-                }
-            }
-        }
+        if (!storage.has_member("controllers")) return;
+
+        var controllers = storage.get_array_member("controllers");
+        if (controllers.get_length() == 0) return;
+
+        var ctrl = controllers.get_object_element(0);
+        if (!ctrl.has_member("devices")) return;
+
+        var devices = ctrl.get_array_member("devices");
+        if (devices.get_length() == 0) return;
+
+        var disk = devices.get_object_element(0);
+        edit_disk.text = disk.has_member("file") ?
+        disk.get_string_member("file") : "";
+        label_disk_fmt.label = disk.has_member("format") ?
+        disk.get_string_member("format") : "raw";
+
     }
 
     // ---- Network tab ----
@@ -342,103 +343,124 @@ public class VmConfigEditor : Gtk.Box {
     // ---- Save ----
 
     private void on_save() {
-        if (config == null) {
-            return;
-        }
+        if (config == null) return;
 
-        string? old_name = null;
-        // Update name if changed
-        var new_name = edit_name.text.strip();
-        if (new_name != "" && new_name != vm_name) {
-            config.set_string_member("name", new_name);
-            old_name = vm_name;
-            // Rename the config file
-            config_store.delete_config(vm_name);
-            vm_name = new_name;
-        }
+        string? old_name = sync_name();
+        sync_general_config();
+        sync_audio_config();
+        sync_storage_config();
+        sync_network_config();
+        sync_devices_config();
 
-        // Machine
-        var machine = config.get_object_member("machine");
-        machine.set_string_member("cpu", ((Gtk.StringList) combo_cpu.model).get_string(combo_cpu.selected));
-        machine.set_int_member("ram_mb", spin_ram.get_value_as_int());
-        machine.set_string_member("accelerator", ((Gtk.StringList) combo_accel.model).get_string(combo_accel.selected));
-
-        // Audio (OPL3)
-        if (config.has_member("audio")) {
-            var audio = config.get_object_member("audio");
-            audio.set_boolean_member("opl3", chk_opl3.active);
-        }
-
-        // Storage
-        if (config.has_member("storage")) {
-            var storage = config.get_object_member("storage");
-            if (storage.has_member("controllers")) {
-                var controllers = storage.get_array_member("controllers");
-                if (controllers.get_length() > 0) {
-                    var ctrl = controllers.get_object_element(0);
-                    if (ctrl.has_member("devices")) {
-                        var devs = ctrl.get_array_member("devices");
-                        if (devs.get_length() > 0) {
-                            var disk = devs.get_object_element(0);
-                            disk.set_string_member("file", edit_disk.text.strip());
-                        } else {
-                            var disk = new Json.Object ();
-                            disk.set_string_member("id", "hda");
-                            disk.set_string_member("type", "hd");
-                            disk.set_string_member("file", edit_disk.text.strip());
-                            disk.set_string_member("format", label_disk_fmt.label != "" ? label_disk_fmt.label : "qcow2");
-                            disk.set_int_member("boot_index", 1);
-                            devs.add_object_element(disk);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Network
-        if (config.has_member("networking")) {
-            var networking = config.get_object_member("networking");
-            networking.set_string_member("type", ((Gtk.StringList) combo_net.model).get_string(combo_net.selected));
-        }
-
-        // Devices
-        if (config.has_member("devices")) {
-            var devices = config.get_array_member("devices");
-            // Remove optional devices, keep VGA (first element)
-            for (var i = (int) devices.get_length() - 1; i >= 1; i--) {
-                var dev = devices.get_object_element(i);
-                var t = dev.get_string_member("type");
-                if (t in new string[] { "voodoo3", "hypback", "sb16" }) {
-                    devices.remove_element(i);
-                }
-            }
-
-            if (chk_voodoo.active) {
-                var v = new Json.Object();
-                v.set_string_member("type", "voodoo3");
-                v.set_int_member("vram_mb", 64);
-                devices.add_object_element(v);
-            }
-            if (chk_hypback.active) {
-                var h = new Json.Object();
-                h.set_string_member("type", "hypback");
-                h.set_string_member("id", "hbe0");
-                devices.add_object_element(h);
-            }
-            if (chk_sb16.active) {
-                var s = new Json.Object();
-                s.set_string_member("type", "sb16");
-                s.set_int_member("irq", 5);
-                s.set_int_member("dma", 1);
-                s.set_int_member("dma16", 5);
-                devices.add_object_element(s);
-            }
-        }
-
-        // Persist
         config_store.save_config(vm_name, config);
         status_label.label = "✓ Config saved";
         config_saved(vm_name, old_name);
+    }
+
+    /** Update VM name in config; return old name if changed (for rename). */
+    private string? sync_name() {
+        var new_name = edit_name.text.strip();
+        if (new_name != "" && new_name != vm_name) {
+            config.set_string_member("name", new_name);
+            config_store.delete_config(vm_name);
+            var old = vm_name;
+            vm_name = new_name;
+            return old;
+        }
+        return null;
+    }
+
+    /** Persist machine (CPU, RAM, accelerator) settings. */
+    private void sync_general_config() {
+        var machine = config.get_object_member("machine");
+        machine.set_string_member("cpu",
+                ((Gtk.StringList) combo_cpu.model).get_string(combo_cpu.selected));
+        machine.set_int_member("ram_mb", spin_ram.get_value_as_int());
+        machine.set_string_member("accelerator",
+                ((Gtk.StringList) combo_accel.model).get_string(combo_accel.selected));
+    }
+
+    /** Persist OPL3 audio setting. */
+    private void sync_audio_config() {
+        if (config.has_member("audio")) {
+            config.get_object_member("audio")
+            .set_boolean_member("opl3", chk_opl3.active);
+        }
+    }
+
+    /** Persist disk image path. Creates a device entry if none exists. */
+    private void sync_storage_config() {
+        if (!config.has_member("storage")) return;
+
+        var storage = config.get_object_member("storage");
+        if (!storage.has_member("controllers")) return;
+
+        var controllers = storage.get_array_member("controllers");
+        if (controllers.get_length() == 0) return;
+
+        var ctrl = controllers.get_object_element(0);
+        if (!ctrl.has_member("devices")) return;
+
+        var devs = ctrl.get_array_member("devices");
+        var disk_path = edit_disk.text.strip();
+
+        if (devs.get_length() > 0) {
+            devs.get_object_element(0)
+            .set_string_member("file", disk_path);
+        } else if (disk_path != "") {
+            var disk = new Json.Object();
+            disk.set_string_member("id", "hda");
+            disk.set_string_member("type", "hd");
+            disk.set_string_member("file", disk_path);
+            disk.set_string_member("format",
+                    label_disk_fmt.label != "" ? label_disk_fmt.label : "qcow2");
+            disk.set_int_member("boot_index", 1);
+            devs.add_object_element(disk);
+        }
+    }
+
+    /** Persist network type selection. */
+    private void sync_network_config() {
+        if (config.has_member("networking")) {
+            config.get_object_member("networking")
+            .set_string_member("type",
+                    ((Gtk.StringList) combo_net.model).get_string(combo_net.selected));
+        }
+    }
+
+    /** Sync optional device checkboxes with the devices config array. */
+    private void sync_devices_config() {
+        if (!config.has_member("devices")) return;
+
+        var devices = config.get_array_member("devices");
+        // Remove optional devices (keep VGA at index 0)
+        for (var i = (int) devices.get_length() - 1; i >= 1; i--) {
+            var t = devices.get_object_element(i).get_string_member("type");
+            if (t in new string[] { "voodoo3", "hypback", "sb16" }) {
+                devices.remove_element(i);
+            }
+        }
+
+        if (chk_voodoo.active) {
+            var v = new Json.Object();
+            v.set_string_member("type", "voodoo3");
+            v.set_int_member("vram_mb", 64);
+            devices.add_object_element(v);
+        }
+        if (chk_hypback.active) {
+            var h = new Json.Object();
+            h.set_string_member("type", "hypback");
+            h.set_string_member("id", "hbe0");
+            devices.add_object_element(h);
+        }
+        if (chk_sb16.active) {
+            var s = new Json.Object();
+            s.set_string_member("type", "sb16");
+            s.set_int_member("irq", 5);
+            s.set_int_member("dma", 1);
+            s.set_int_member("dma16", 5);
+            devices.add_object_element(s);
+        }
     }
 
     private void on_delete() {

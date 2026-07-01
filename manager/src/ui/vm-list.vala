@@ -45,7 +45,7 @@ public class VmList : Gtk.Box {
 
     // ---- Construction ----
 
-    public VmList (ConfigStore config_store) {
+    public VmList(ConfigStore config_store) {
         Object(orientation: Gtk.Orientation.VERTICAL, spacing: 0);
 
         this.config_store = config_store;
@@ -68,9 +68,11 @@ public class VmList : Gtk.Box {
         // List model
         model = new GLib.ListStore (typeof (VmEntry));
 
-        // Selection
+        // Selection — use the SelectionModel::selection-changed signal
+        // rather than notify::selected, which can lag behind the actual
+        // selection state in some GTK4 scenarios (e.g. after model changes).
         selection = new Gtk.SingleSelection (model);
-        selection.notify["selected"].connect(on_selection_changed);
+        selection.selection_changed.connect(on_selection_changed);
 
         // List view
         list_view = new Gtk.ListView (selection, null);
@@ -115,6 +117,18 @@ public class VmList : Gtk.Box {
             entries[vm_names[i]] = entry;
             model.append(entry);
         }
+    }
+
+    /**
+     * Swap the backing config store. Used by main.vala after the
+     * user changes the base directory in Preferences — the existing
+     * VmList instance can keep its UI cache, but it needs to be
+     * repointed at the new ConfigStore so subsequent list_vms()
+     * calls come from the right directory.
+     */
+    public void set_config_store(ConfigStore config_store) {
+        this.config_store = config_store;
+        refresh();
     }
 
     /** Add a VM entry to the list. */
@@ -279,8 +293,16 @@ public class VmList : Gtk.Box {
 
     // ---- Selection / activation ----
 
-    private void on_selection_changed() {
-        var selected = (VmEntry?) selection.selected_item;
+    private void on_selection_changed(uint position, uint n_items) {
+        // n_items == 0 means the selection was cleared.
+        // position is the start of the *changed range* (e.g. when
+        // switching from item 0→1, position=0,n_items=2 since both
+        // items changed state). Use selection.selected to get the
+        // actual selected index.
+        if (n_items == 0) return;
+        var idx = selection.selected;
+        if (idx >= model.get_n_items()) return;
+        var selected = (VmEntry?) model.get_item(idx);
         if (selected != null) {
             vm_selected(selected.name);
         }
