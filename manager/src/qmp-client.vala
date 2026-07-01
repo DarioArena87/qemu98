@@ -128,14 +128,15 @@ public class QmpClient : GLib.Object {
     /**
      * Send a QMP command and wait for the response.
      *
+     * Callers must ensure the client is READY before calling.
+     *
      * @param command   The QMP command name (e.g., "query-status")
      * @param args      Optional command arguments as a Json.Object
      * @return          The parsed response Json.Object, or null on error
      */
     public async Json.Object? send_command(string command, Json.Object ? args = null) throws GLib.Error {
-        if (state != State.READY) {
-            warning("QmpClient: not ready to send commands (state=%s)",
-                    state.to_string());
+        if (output_stream == null) {
+            warning("QmpClient: cannot send command \"%s\" — no connection", command);
             return null;
         }
 
@@ -173,10 +174,13 @@ public class QmpClient : GLib.Object {
 
     /**
      * Send a QMP command synchronously (non-async wrapper).
-     * Use this for fire-and-forget commands.
+     *
+     * Callers must ensure the client is READY before calling.
+     * Used for fire-and-forget commands.
      */
     public void send_command_sync(string command, Json.Object? args = null) {
-        if (state != State.READY) {
+        if (output_stream == null) {
+            warning("QmpClient: cannot send command \"%s\" — no connection", command);
             return;
         }
 
@@ -288,10 +292,9 @@ public class QmpClient : GLib.Object {
 
         greeting_received = true;
 
-    // Send qmp_capabilities to complete negotiation
+        qmp_set_state(State.READY);
         send_command_sync("qmp_capabilities", null);
 
-        qmp_set_state(State.READY);
         message("QmpClient: negotiation complete — ready");
     }
 
