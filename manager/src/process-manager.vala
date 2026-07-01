@@ -78,11 +78,11 @@ public class ProcessManager : GLib.Object {
     }
 
     /** Append -machine, -cpu, -m, -uuid, -name, optional -bios, and -boot. */
-    private void append_machine_args (ref GLib.GenericArray<string> args) {
+    private void append_machine_args(ref GLib.GenericArray<string> args) {
         var machine = config.get_object_member("machine");
         var accel = machine.get_string_member("accelerator");
         args.add ("-machine");
-        args.add (@"$(machine.get_string_member("type")),accel=$(accel)");
+        args.add (@"$(machine.get_string_member("type")),hpet=off,acpi=on,usb=on,accel=$(accel)");
 
         args.add ("-cpu");
         args.add (machine.get_string_member("cpu"));
@@ -97,7 +97,7 @@ public class ProcessManager : GLib.Object {
         args.add ("-name");
         args.add (config.get_string_member("name"));
 
-        if (machine.has_member ("bios")) {
+        if (machine.has_member("bios")) {
             var bios = machine.get_string_member("bios");
             if (bios != null && bios != "") {
                 args.add ("-bios");
@@ -114,7 +114,7 @@ public class ProcessManager : GLib.Object {
     }
 
     /** Append -display (and -vnc if applicable). */
-    private void append_display_args (ref GLib.GenericArray<string> args) {
+    private void append_display_args(ref GLib.GenericArray<string> args) {
         if (!config.has_member ("display")) return;
 
         var display = config.get_object_member("display");
@@ -200,6 +200,10 @@ public class ProcessManager : GLib.Object {
                     break;
             }
         }
+
+        args.add("-usb");
+        args.add("-device");
+        args.add("usb-tablet");
     }
 
     /**
