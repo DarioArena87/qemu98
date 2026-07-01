@@ -38,6 +38,13 @@ public class VmConfigEditor : Gtk.Box {
     // Network tab
     private Gtk.DropDown combo_net;
 
+    // Power button
+    private Gtk.Button power_btn;
+
+    // Boot Order tab
+    private Gtk.ListBox boot_list;
+    private GLib.GenericArray<BootDeviceRow> boot_rows;
+
     // ---- Signals ----
 
     /** Emitted when the user saves changes (passes old name for renames). */
@@ -45,6 +52,9 @@ public class VmConfigEditor : Gtk.Box {
 
     /** Emitted when the user requests deletion of this VM. */
     public signal void delete_requested (string vm_name);
+
+    /** Emitted when the user clicks the Start / Stop button. */
+    public signal void power_action_requested (string vm_name);
 
     // ---- Construction ----
 
@@ -61,6 +71,7 @@ public class VmConfigEditor : Gtk.Box {
         notebook.append_page(build_devices_tab(), new Gtk.Label("Devices"));
         notebook.append_page(build_storage_tab(), new Gtk.Label("Storage"));
         notebook.append_page(build_network_tab(), new Gtk.Label("Network"));
+        notebook.append_page(build_boot_order_tab(), new Gtk.Label("Boot Order"));
 
         append(notebook);
 
@@ -75,6 +86,14 @@ public class VmConfigEditor : Gtk.Box {
         status_label.hexpand = true;
         status_label.halign = Gtk.Align.START;
         save_bar.append(status_label);
+
+        power_btn = new Gtk.Button.with_label("Start");
+        power_btn.add_css_class("suggested-action");
+        power_btn.sensitive = false;
+        power_btn.clicked.connect(() => {
+            power_action_requested(vm_name);
+        });
+        save_bar.append(power_btn);
 
         var save_btn = new Gtk.Button.with_label("Save Config");
         save_btn.add_css_class("suggested-action");
@@ -105,6 +124,7 @@ public class VmConfigEditor : Gtk.Box {
         load_devices();
         load_storage();
         load_network();
+        load_boot_order();
     }
 
     // ---- General tab ----
@@ -351,6 +371,7 @@ public class VmConfigEditor : Gtk.Box {
         sync_storage_config();
         sync_network_config();
         sync_devices_config();
+        sync_boot_order();
 
         config_store.save_config(vm_name, config);
         status_label.label = "✓ Config saved";
@@ -414,7 +435,6 @@ public class VmConfigEditor : Gtk.Box {
             disk.set_string_member("file", disk_path);
             disk.set_string_member("format",
                     label_disk_fmt.label != "" ? label_disk_fmt.label : "qcow2");
-            disk.set_int_member("boot_index", 1);
             devs.add_object_element(disk);
         }
     }
@@ -465,6 +485,216 @@ public class VmConfigEditor : Gtk.Box {
 
     private void on_delete() {
         delete_requested(vm_name);
+    }
+
+    // ---- Boot Order tab ----
+
+    /** Lightweight class holding a bootable device reference. */
+    private class BootDeviceRow {
+        public Json.Object owner;   // the parent device object
+        public string label;
+    }
+
+    private Gtk.Widget build_boot_order_tab() {
+        var box = new Gtk.Box(Gtk.Orientation.VERTICAL, 12);
+        box.margin_start = 24;
+        box.margin_end = 24;
+        box.margin_top = 24;
+        box.margin_bottom = 24;
+
+        var title = new Gtk.Label("<b>Boot Device Order</b>");
+        title.use_markup = true;
+        title.halign = Gtk.Align.START;
+        box.append(title);
+
+        var hint = new Gtk.Label("Use ↑ ↓ to reorder. First device boots first.");
+        hint.halign = Gtk.Align.START;
+        hint.margin_bottom = 6;
+        box.append(hint);
+
+        var sc = new Gtk.ScrolledWindow() { hexpand = true, vexpand = true };
+        sc.set_min_content_height(120);
+        boot_list = new Gtk.ListBox();
+        boot_list.add_css_class("rich-list");
+        sc.child = boot_list;
+        box.append(sc);
+
+        return box;
+    }
+
+    /**
+     * Scan storage config for bootable devices and populate the list.
+     * Each device that has boot_order >= 0 (or no boot_order yet) is
+     * included as a candidate. Devices are sorted by current boot_order.
+     */
+    private void load_boot_order() {
+        // Remove all existing rows
+        Gtk.Widget? row_widget;
+        while ((row_widget = boot_list.get_first_child()) != null)
+            boot_list.remove(row_widget);
+
+        boot_rows = new GLib.GenericArray<BootDeviceRow>();
+
+        if (!config.has_member("storage")) return;
+        var storage = config.get_object_member("storage");
+
+        // Controller devices (hd + cdrom)
+        if (storage.has_member("controllers")) {
+            var controllers = storage.get_array_member("controllers");
+            for (var i = 0; i < controllers.get_length(); i++) {
+                var ctrl = controllers.get_object_element(i);
+                if (!ctrl.has_member("devices")) continue;
+                var devs = ctrl.get_array_member("devices");
+                for (var j = 0; j < devs.get_length(); j++) {
+                    var dev = devs.get_object_element(j);
+                    var dtype = dev.has_member("type")
+                        ? dev.get_string_member("type") : "hd";
+                    if (dtype != "hd" && dtype != "cdrom") continue;
+                    if (!dev.has_member("file")) continue;
+
+                    var did = dev.has_member("id")
+                        ? dev.get_string_member("id") : "?";
+                    var label = dtype == "hd"
+                        ? @"Hard Disk ($(did))"
+                        : @"CD-ROM ($(did))";
+
+                    boot_rows.add(new BootDeviceRow() {
+                        owner = dev, label = label
+                    });
+                }
+            }
+        }
+
+        // Floppy drives
+        if (storage.has_member("floppy")) {
+            var floppies = storage.get_array_member("floppy");
+            for (var i = 0; i < floppies.get_length(); i++) {
+                var flop = floppies.get_object_element(i);
+                if (!flop.has_member("file")) continue;
+                var did = flop.has_member("id")
+                    ? flop.get_string_member("id") : @"fda$(i)";
+                boot_rows.add(new BootDeviceRow() {
+                    owner = flop,
+                    label = @"Floppy ($(did))"
+                });
+            }
+        }
+
+        // Sort by current boot_order (unset → treated as 0, at end)
+        // Use get()/set() with explicit owned types for proper ref counting
+        for (int i = 0; i < (int) boot_rows.length - 1; i++) {
+            for (int j = 0; j < (int) boot_rows.length - 1 - i; j++) {
+                int order_a = boot_rows.get(j).owner.has_member("boot_order")
+                    ? (int) boot_rows.get(j).owner.get_int_member("boot_order") : 0;
+                int order_b = boot_rows.get(j + 1).owner.has_member("boot_order")
+                    ? (int) boot_rows.get(j + 1).owner.get_int_member("boot_order") : 0;
+                // 0 means "not in boot order", sort to end
+                if (order_a == 0) order_a = int.MAX;
+                if (order_b == 0) order_b = int.MAX;
+                if (order_a > order_b) {
+                    BootDeviceRow a = boot_rows.get(j);
+                    BootDeviceRow b = boot_rows.get(j + 1);
+                    boot_rows.set(j, b);
+                    boot_rows.set(j + 1, a);
+                }
+            }
+        }
+
+        // Build listbox rows
+        for (var i = 0; i < boot_rows.length; i++) {
+            append_boot_list_row(i);
+        }
+    }
+
+    /** Append a single reorderable row to the boot order list. */
+    private void append_boot_list_row(int index) {
+        var row = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
+        row.margin_start = 6;
+        row.margin_end = 6;
+        row.margin_top = 4;
+        row.margin_bottom = 4;
+
+        var label = new Gtk.Label(boot_rows.get(index).label);
+        label.halign = Gtk.Align.START;
+        label.hexpand = true;
+        row.append(label);
+
+        // Index badge
+        bool in_order = boot_rows.get(index).owner.has_member("boot_order")
+            && (int) boot_rows.get(index).owner.get_int_member("boot_order") > 0;
+        var badge = new Gtk.Label(in_order ? @"#$(index + 1)" : "—");
+        badge.margin_end = 6;
+        row.append(badge);
+
+        var up_btn = new Gtk.Button.from_icon_name("go-up-symbolic");
+        up_btn.sensitive = index > 0;
+        int captured_idx = index;
+        up_btn.clicked.connect(() => move_boot_device(captured_idx, -1));
+        row.append(up_btn);
+
+        var down_btn = new Gtk.Button.from_icon_name("go-down-symbolic");
+        down_btn.sensitive = index < (int) boot_rows.length - 1;
+        down_btn.clicked.connect(() => move_boot_device(captured_idx, 1));
+        row.append(down_btn);
+
+        boot_list.append(row);
+    }
+
+    private void move_boot_device(int index, int direction) {
+        int target = index + direction;
+        if (target < 0 || target >= (int) boot_rows.length) return;
+
+        // Use get()/set() with explicit owned types for proper ref counting
+        BootDeviceRow a = boot_rows.get(index);
+        BootDeviceRow b = boot_rows.get(target);
+        boot_rows.set(index, b);
+        boot_rows.set(target, a);
+
+        rebuild_boot_list();
+    }
+
+    /** Clear and rebuild all listbox rows from the boot_rows array. */
+    private void rebuild_boot_list() {
+        Gtk.Widget? w;
+        while ((w = boot_list.get_first_child()) != null)
+            boot_list.remove(w);
+
+        for (var i = 0; i < boot_rows.length; i++) {
+            append_boot_list_row(i);
+        }
+    }
+
+    /**
+     * Persist boot_order on each device from the current list position.
+     * Devices get boot_order = 1-based position, or the key removed if
+     * they're no longer in the order.
+     */
+    private void sync_boot_order() {
+        if (boot_rows == null) return;
+        for (var i = 0; i < boot_rows.length; i++) {
+            boot_rows.get(i).owner.set_int_member("boot_order", i + 1);
+        }
+    }
+
+    /**
+     * Update the Start / Stop button label and sensitivity based on
+     * the VM's current power state.
+     *
+     * @param running  true if the VM is running or paused
+     * @param name     the VM name (must match the currently loaded VM)
+     */
+    public void set_vm_power_state(bool running, string name) {
+        if (name != vm_name) return;
+        if (running) {
+            power_btn.label = "Stop";
+            power_btn.remove_css_class("suggested-action");
+            power_btn.add_css_class("destructive-action");
+        } else {
+            power_btn.label = "Start";
+            power_btn.remove_css_class("destructive-action");
+            power_btn.add_css_class("suggested-action");
+        }
+        power_btn.sensitive = true;
     }
 
     // ---- Helpers ----

@@ -32,12 +32,15 @@ public class MainContent {
     /** Emitted on right-click on a VM entry. Coordinates are widget-relative. */
     public signal void vm_context_menu_requested(string vm_name, double x, double y);
 
+    /** Emitted when the user clicks the Stop button in the runtime view. */
+    public signal void runtime_stop_requested();
+
     // ---- Internal ----
 
-    private Gtk.Paned   paned;
-    private Gtk.Stack   main_stack;
-    private Gtk.Label   welcome_page;
-    private Gtk.Notebook runtime_notebook;
+    private Gtk.Paned     paned;
+    private Gtk.Stack     main_stack;
+    private Gtk.Label     welcome_page;
+    private Gtk.Notebook  runtime_notebook;
 
     // ---- Construction ----
 
@@ -89,12 +92,32 @@ public class MainContent {
 
         main_stack.add_named(config_editor, "editor");
 
+        // ---- Runtime page (notebook + Stop button) ----
         runtime_notebook = new Gtk.Notebook();
         runtime_notebook.hexpand = true;
         runtime_notebook.vexpand = true;
         runtime_notebook.append_page(snapshot_panel, new Gtk.Label("Snapshots"));
         runtime_notebook.append_page(media_panel,    new Gtk.Label("Media"));
-        main_stack.add_named(runtime_notebook, "runtime");
+
+        var runtime_box = new Gtk.Box(Gtk.Orientation.VERTICAL, 0);
+        runtime_box.append(runtime_notebook);
+
+        var runtime_bar = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
+        runtime_bar.margin_start = 12;
+        runtime_bar.margin_end = 12;
+        runtime_bar.margin_top = 6;
+        runtime_bar.margin_bottom = 6;
+        runtime_bar.halign = Gtk.Align.END;
+
+        var stop_btn = new Gtk.Button.with_label("Stop VM");
+        stop_btn.add_css_class("destructive-action");
+        stop_btn.clicked.connect(() => {
+            runtime_stop_requested();
+        });
+        runtime_bar.append(stop_btn);
+        runtime_box.append(runtime_bar);
+
+        main_stack.add_named(runtime_box, "runtime");
 
         main_stack.visible_child = welcome_page;
         paned.end_child = main_stack;

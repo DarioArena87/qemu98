@@ -33,6 +33,10 @@ public class NewVmWizard : Gtk.Dialog {
     // Page 2: Storage
     private Gtk.Entry disk_path_entry;
     private Gtk.DropDown disk_format_dropdown;
+    private Gtk.SpinButton disk_size_spin;
+    private Gtk.DropDown disk_size_unit_dropdown;
+    private Gtk.Entry cdrom_entry;
+    private Gtk.Entry floppy_entry;
 
     // Page 3: Display / Audio
     private Gtk.DropDown display_dropdown;
@@ -272,6 +276,41 @@ public class NewVmWizard : Gtk.Dialog {
         dr.append(bbtn);
         box.append(dr);
         box.append(make_labeled_dropdown(out disk_format_dropdown, "Format:", "qcow2", "raw", "vhd"));
+
+        // Disk size (for auto-creation on Finish)
+        var size_row = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
+        size_row.append(new Gtk.Label("Disk size:") { width_request = 120, halign = Gtk.Align.END });
+        var size_adj = new Gtk.Adjustment(4, 0.1, 1024, 0.5, 2, 0);
+        disk_size_spin = new Gtk.SpinButton(size_adj, 1, 1) { hexpand = true, value = 4 };
+        size_row.append(disk_size_spin);
+        var unit_model = new Gtk.StringList(null);
+        unit_model.append("GB");
+        unit_model.append("MB");
+        disk_size_unit_dropdown = new Gtk.DropDown(unit_model, null);
+        disk_size_unit_dropdown.selected = 0;
+        size_row.append(disk_size_unit_dropdown);
+        box.append(size_row);
+
+        // CD-ROM image (optional boot media)
+        box.append(new Gtk.Label("CD-ROM image (optional):") { halign = Gtk.Align.START, margin_top = 4 });
+        var cd_row = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
+        cdrom_entry = new Gtk.Entry() { hexpand = true };
+        cd_row.append(cdrom_entry);
+        var cd_btn = new Gtk.Button.with_label("Browse…");
+        cd_btn.clicked.connect(() => on_browse_media(cdrom_entry, "Select CD-ROM Image"));
+        cd_row.append(cd_btn);
+        box.append(cd_row);
+
+        // Floppy image (optional boot media)
+        box.append(new Gtk.Label("Floppy image (optional):") { halign = Gtk.Align.START, margin_top = 4 });
+        var floppy_row = new Gtk.Box(Gtk.Orientation.HORIZONTAL, 6);
+        floppy_entry = new Gtk.Entry() { hexpand = true };
+        floppy_row.append(floppy_entry);
+        var floppy_btn = new Gtk.Button.with_label("Browse…");
+        floppy_btn.clicked.connect(() => on_browse_media(floppy_entry, "Select Floppy Image"));
+        floppy_row.append(floppy_btn);
+        box.append(floppy_row);
+
         return box;
     }
 
@@ -287,7 +326,7 @@ public class NewVmWizard : Gtk.Dialog {
         box.append(section_label("Display And Audio"));
         box.append(make_labeled_dropdown(out display_dropdown, "Display:", "gtk", "sdl", "vnc"));
         box.append(make_labeled_dropdown(out filter_dropdown, "Filter:", "nearest", "linear"));
-        voodoo_check = new Gtk.CheckButton.with_label ("Voodoo3 3D accelerator") { active = true };
+        voodoo_check = new Gtk.CheckButton.with_label ("Voodoo3 3D accelerator") { active = false };
         box.append(voodoo_check);
         hypback_check = new Gtk.CheckButton.with_label ("Hypercall backdoor (hypback)") { active = true };
         box.append(hypback_check);
@@ -310,13 +349,14 @@ public class NewVmWizard : Gtk.Dialog {
     private Gtk.Widget build_review_page() {
         var box = make_page_box();
         box.append(section_label("Review"));
-        review_label = new Gtk.Label ("");
+        review_label = new Gtk.Label("");
         review_label.use_markup = true;
         review_label.halign = Gtk.Align.START;
         review_label.valign = Gtk.Align.START;
         review_label.wrap = true;
         review_label.selectable = true;
-        var sc = new Gtk.ScrolledWindow () { child = review_label, vexpand = true, hexpand = true };
+        var sc = new Gtk.ScrolledWindow() { child = review_label, vexpand = true, hexpand = true };
+        sc.set_min_content_height(200);
         box.append(sc);
         return box;
     }
@@ -331,13 +371,25 @@ public class NewVmWizard : Gtk.Dialog {
     }
 
     private void on_next() {
+        // Validate current page before advancing
+        if (!validate_current_page())
+            return;
+
         if (current_page == page_keys.length - 1) {
             // Finish — on the review page
             var name = name_entry.text.strip();
             if (name == "") {
-                show_error_dialog("Please enter a name for the virtual machine.");
+                show_error_dialog("Cannot Finish", "Please enter a name for the virtual machine.");
                 return;
             }
+
+            // Auto-create disk image if the path doesn't exist yet
+            var disk_path = disk_path_entry.text.strip();
+            if (disk_path != "") {
+                if (!create_disk_image_if_needed(disk_path))
+                    return;
+            }
+
             result_name = name;
             result_config = build_config(name);
             response(-5); // GTK_RESPONSE_OK — emits ::response, closes dialog
@@ -354,6 +406,125 @@ public class NewVmWizard : Gtk.Dialog {
         update_nav();
     }
 
+    /**
+     * Validate the fields on the current wizard page.
+     * Returns true if the page is valid and navigation can proceed.
+     */
+    private bool validate_current_page() {
+        switch (current_page) {
+        case 0: // Name page
+            if (name_entry.text.strip() == "") {
+                show_error_dialog("Invalid Name", "Please enter a name for the virtual machine.");
+                name_entry.grab_focus();
+                return false;
+            }
+            break;
+        case 2: // Storage page
+            var disk_path = disk_path_entry.text.strip();
+            if (disk_path != "") {
+                var parent = GLib.Path.get_dirname(disk_path);
+                if (parent == "" || parent == ".") {
+                    show_error_dialog("Invalid Path", "Please specify a full path for the disk image, or leave it empty to use the default.");
+                    return false;
+                }
+            }
+            // Validate CD-ROM image exists if specified
+            var cd_path = cdrom_entry.text.strip();
+            if (cd_path != "" && !GLib.FileUtils.test(cd_path, GLib.FileTest.EXISTS)) {
+                show_error_dialog("File Not Found", @"CD-ROM image does not exist:\n$(cd_path)");
+                cdrom_entry.grab_focus();
+                return false;
+            }
+            if (cd_path != "" && !GLib.FileUtils.test(cd_path, GLib.FileTest.IS_REGULAR)) {
+                show_error_dialog("Invalid File", @"CD-ROM path is not a regular file:\n$(cd_path)");
+                cdrom_entry.grab_focus();
+                return false;
+            }
+            // Validate floppy image exists if specified
+            var floppy_path = floppy_entry.text.strip();
+            if (floppy_path != "" && !GLib.FileUtils.test(floppy_path, GLib.FileTest.EXISTS)) {
+                show_error_dialog("File Not Found", @"Floppy image does not exist:\n$(floppy_path)");
+                floppy_entry.grab_focus();
+                return false;
+            }
+            if (floppy_path != "" && !GLib.FileUtils.test(floppy_path, GLib.FileTest.IS_REGULAR)) {
+                show_error_dialog("Invalid File", @"Floppy path is not a regular file:\n$(floppy_path)");
+                floppy_entry.grab_focus();
+                return false;
+            }
+            break;
+        }
+        return true;
+    }
+
+    /**
+     * Create the disk image using qemu-img if it doesn't already exist.
+     * Shows feedback on the next button while the operation runs.
+     * Returns true on success (or if already exists), false on failure.
+     */
+    private bool create_disk_image_if_needed(string disk_path) {
+        var file = GLib.File.new_for_path(disk_path);
+        if (file.query_exists())
+            return true; // Already exists, nothing to do
+
+        // Ensure parent directory exists
+        var parent_dir = file.get_parent();
+        if (parent_dir != null && !parent_dir.query_exists()) {
+            try {
+                parent_dir.make_directory_with_parents();
+            } catch (GLib.Error e) {
+                show_error_dialog("Cannot Create Disk", @"Cannot create directory for disk image:\n$(e.message)");
+                return false;
+            }
+        }
+
+        var format = dd_text(disk_format_dropdown);
+        var size_val = disk_size_spin.value;
+        var unit = disk_size_unit_dropdown.selected == 0 ? "G" : "M";
+        var size_str = @"$(size_val)$(unit)";
+
+        // Show progress feedback — flush pending events so the UI repaints
+        var saved_label = next_btn.label;
+        next_btn.label = "Creating disk image…";
+        next_btn.sensitive = false;
+        var ctx = GLib.MainContext.default();
+        while (ctx.pending())
+            ctx.iteration(false);
+
+        try {
+            string[] argv = { "qemu-img", "create", "-f", format, disk_path, size_str };
+            string stdout_str;
+            string stderr_str;
+            int exit_status;
+
+            GLib.Process.spawn_sync(
+                    null,
+                    argv,
+                    null,
+                    GLib.SpawnFlags.SEARCH_PATH,
+                    null,
+                    out stdout_str,
+                    out stderr_str,
+                    out exit_status
+            );
+
+            next_btn.label = saved_label;
+            next_btn.sensitive = true;
+
+            if (exit_status != 0) {
+                show_error_dialog("Cannot Create Disk", @"Failed to create disk image:\n$(stderr_str)");
+                return false;
+            }
+        } catch (GLib.Error e) {
+            next_btn.label = saved_label;
+            next_btn.sensitive = true;
+            show_error_dialog("Cannot Create Disk", @"Failed to run qemu-img:\n$(e.message)");
+            return false;
+        }
+
+        return true;
+    }
+
     private void update_nav() {
         stack.visible_child_name = page_keys[current_page];
         prev_btn.sensitive = current_page > 0;
@@ -363,32 +534,52 @@ public class NewVmWizard : Gtk.Dialog {
 
     // ---- Review builder ----
 
+    /**
+     * Escape characters that are special in Pango markup (&amp;, &lt;, &gt;).
+     * Call this on any user-provided text before including it in
+     * a label with use_markup=true.
+     */
+    private static string escape_markup(string s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
     private void update_review() {
         var sb = new GLib.StringBuilder ("<b>New VM Summary</b>\n\n");
-        sb.append(@"<b>Name:</b> $(name_entry.text)\n");
-        sb.append(@"<b>OS:</b> $(dd_text (os_dropdown))\n\n");
+        sb.append(@"<b>Name:</b> $(escape_markup(name_entry.text))\n");
+        sb.append(@"<b>OS:</b> $(escape_markup(dd_text(os_dropdown)))\n\n");
         sb.append("<b>Hardware:</b>\n");
-        sb.append(@"  CPU: $(dd_text (cpu_dropdown))\n");
-        sb.append(@"  RAM: $(ram_spin.get_value_as_int ()) MB\n");
-        sb.append(@"  Machine: $(dd_text (machine_dropdown))\n");
-        sb.append(@"  Accelerator: $(dd_text (accel_dropdown))\n\n");
+        sb.append(@"  CPU: $(escape_markup(dd_text(cpu_dropdown)))\n");
+        sb.append(@"  RAM: $(ram_spin.get_value_as_int()) MB\n");
+        sb.append(@"  Machine: $(escape_markup(dd_text(machine_dropdown)))\n");
+        sb.append(@"  Accelerator: $(escape_markup(dd_text(accel_dropdown)))\n\n");
         sb.append("<b>Storage:</b>\n");
         var dp = disk_path_entry.text.strip();
-        sb.append(dp != "" ? @"  Disk: $(dp) ($(dd_text (disk_format_dropdown)))\n" : "  No disk image specified\n");
-        sb.append("\n<b>Display & Audio:</b>\n");
-        sb.append(@"  Display: $(dd_text (display_dropdown))\n");
-        sb.append(@"  Filter: $(dd_text (filter_dropdown))\n");
+        if (dp != "") {
+            sb.append(@"  Disk: $(escape_markup(dp)) ($(escape_markup(dd_text(disk_format_dropdown))))\n");
+            var size_val = disk_size_spin.value;
+            var unit = disk_size_unit_dropdown.selected == 0 ? "GB" : "MB";
+            sb.append(@"  Size: $(size_val) $(unit)\n");
+        } else {
+            sb.append("  No disk image specified\n");
+        }
+        var cdrom_path = cdrom_entry.text.strip();
+        if (cdrom_path != "") sb.append(@"  CD-ROM: $(escape_markup(cdrom_path))\n");
+        var floppy_path = floppy_entry.text.strip();
+        if (floppy_path != "") sb.append(@"  Floppy: $(escape_markup(floppy_path))\n");
+        sb.append("\n<b>Display &amp; Audio:</b>\n");
+        sb.append(@"  Display: $(escape_markup(dd_text(display_dropdown)))\n");
+        sb.append(@"  Filter: $(escape_markup(dd_text(filter_dropdown)))\n");
         if (voodoo_check.active) sb.append("  Voodoo3: yes\n");
         if (hypback_check.active) sb.append("  Hypback: yes\n");
         if (sb16_check.active) sb.append("  SB16: yes\n");
         if (opl3_check.active) sb.append("  OPL3: yes\n");
-        sb.append(@"  Audio backend: $(dd_text (audio_dropdown))\n\n");
+        sb.append(@"  Audio backend: $(escape_markup(dd_text(audio_dropdown)))\n\n");
         sb.append("<b>Network:</b>\n");
-        sb.append(@"  Type: $(dd_text (net_dropdown))\n");
+        sb.append(@"  Type: $(escape_markup(dd_text(net_dropdown)))\n");
         review_label.label = sb.str;
     }
 
-    // ---- Disk browse ----
+    // ---- File chooser helpers ----
 
     private void on_browse_disk() {
         var chooser = new Gtk.FileDialog () { title = "Select or Create Disk Image" };
@@ -400,17 +591,44 @@ public class NewVmWizard : Gtk.Dialog {
         });
     }
 
+    /** Generic file-open chooser for CD-ROM / floppy media images. */
+    private void on_browse_media(Gtk.Entry entry, string title) {
+        var chooser = new Gtk.FileDialog() { title = title };
+        chooser.open.begin(this, null, (obj, res) => {
+            try {
+                var f = chooser.open.end(res);
+                if (f != null) entry.text = f.get_path();
+            } catch (GLib.Error e) { }
+        });
+    }
+
     // ---- Config builder ----
 
     /** Show an error dialog to the user. */
-    private void show_error_dialog(string message) {
-        var dialog = new Gtk.AlertDialog ("Cannot Finish");
+    private void show_error_dialog(string title, string message) {
+        var dialog = new Gtk.AlertDialog(title);
         dialog.set_detail(message);
         var buttons = new string[] { "OK" };
         dialog.set_buttons(buttons);
         dialog.choose.begin(this, null, (obj, res) => {
             try { dialog.choose.end(res); } catch (GLib.Error e) {}
         });
+    }
+
+    /**
+     * Ensure the storage config has at least one controller (IDE).
+     * Used by build_config() so that disk and cdrom devices share the
+     * same IDE controller when both are present.
+     */
+    private void ensure_storage_controller(Json.Object storage) {
+        var ctrl_array = storage.get_array_member("controllers");
+        if (ctrl_array.get_length() > 0)
+            return;
+        var c = new Json.Object();
+        c.set_string_member("type", "ide");
+        c.set_string_member("bus", "ide.0");
+        c.set_array_member("devices", new Json.Array());
+        ctrl_array.add_object_element(c);
     }
 
     private Json.Object build_config(string vm_name) {
@@ -458,14 +676,8 @@ public class NewVmWizard : Gtk.Dialog {
         var storage = config.get_object_member("storage");
         var disk_path = disk_path_entry.text.strip();
         if (disk_path != "") {
+            ensure_storage_controller(storage);
             var ctrl_array = storage.get_array_member("controllers");
-            if (ctrl_array.get_length() == 0) {
-                var c = new Json.Object ();
-                c.set_string_member("type", "ide");
-                c.set_string_member("bus", "ide.0");
-                c.set_array_member("devices", new Json.Array ());
-                ctrl_array.add_object_element(c);
-            }
             var ct = ctrl_array.get_object_element(0);
             var devs = ct.get_array_member("devices");
             var disk = new Json.Object ();
@@ -473,8 +685,33 @@ public class NewVmWizard : Gtk.Dialog {
             disk.set_string_member("type", "hd");
             disk.set_string_member("file", disk_path);
             disk.set_string_member("format", dd_text(disk_format_dropdown));
-            disk.set_int_member("boot_index", 1);
             devs.add_object_element(disk);
+        }
+
+        // CD-ROM drive (optional boot media)
+        var cdrom_path = cdrom_entry.text.strip();
+        if (cdrom_path != "") {
+            ensure_storage_controller(storage);
+            var ctrl_array = storage.get_array_member("controllers");
+            var ct = ctrl_array.get_object_element(0);
+            var devs = ct.get_array_member("devices");
+            var cdrom = new Json.Object();
+            cdrom.set_string_member("id", "cd0");
+            cdrom.set_string_member("type", "cdrom");
+            cdrom.set_string_member("file", cdrom_path);
+            cdrom.set_string_member("format", "raw");
+            devs.add_object_element(cdrom);
+        }
+
+        // Floppy drive (optional boot media)
+        var floppy_path = floppy_entry.text.strip();
+        if (floppy_path != "") {
+            var floppy_array = storage.get_array_member("floppy");
+            var floppy_dev = new Json.Object();
+            floppy_dev.set_string_member("id", "fda0");
+            floppy_dev.set_string_member("file", floppy_path);
+            floppy_dev.set_string_member("format", "raw");
+            floppy_array.add_object_element(floppy_dev);
         }
 
         config.get_object_member("networking").set_string_member("type", dd_text(net_dropdown));

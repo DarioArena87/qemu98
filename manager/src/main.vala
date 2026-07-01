@@ -137,6 +137,8 @@ public class Qemu98Manager : Gtk.Application {
         main_content.vm_context_menu_requested.connect(on_vm_context_menu);
         config_editor.config_saved.connect(on_config_saved);
         config_editor.delete_requested.connect(on_delete_vm);
+        config_editor.power_action_requested.connect(on_editor_power_action);
+        main_content.runtime_stop_requested.connect(on_stop_current_vm);
     }
 
     // ---- Binary validation ----
@@ -309,15 +311,36 @@ public class Qemu98Manager : Gtk.Application {
         current_vm = vm_name;
 
         var ctrl = controllers[vm_name];
-        if (ctrl != null &&
+        bool is_running = ctrl != null &&
             (ctrl.state == VmController.VmState.RUNNING ||
-             ctrl.state == VmController.VmState.PAUSED)) {
+             ctrl.state == VmController.VmState.PAUSED);
+
+        if (is_running) {
             main_content.show_runtime(ctrl);
         } else {
             main_content.show_editor(vm_name);
         }
 
+        main_content.config_editor.set_vm_power_state(is_running, vm_name);
         update_action_states();
+    }
+
+    /** Handle Start/Stop button in the config editor. */
+    private void on_editor_power_action(string vm_name) {
+        if (current_vm != vm_name) {
+            main_content.select_vm(vm_name);
+            current_vm = vm_name;
+        }
+        on_vm_activated(vm_name);
+    }
+
+    /** Handle runtime Stop button — stops the current VM. */
+    private void on_stop_current_vm() {
+        if (current_vm != null && controllers.contains(current_vm)) {
+            var c = controllers[current_vm];
+            if (c.state != VmController.VmState.STOPPED)
+                c.stop();
+        }
     }
 
     private void on_vm_activated(string vm_name) {
@@ -333,7 +356,8 @@ public class Qemu98Manager : Gtk.Application {
         if (ctrl.state == VmController.VmState.STOPPED) {
             ctrl.start();
         } else if (ctrl.state == VmController.VmState.RUNNING
-                   || ctrl.state == VmController.VmState.PAUSED) {
+                   || ctrl.state == VmController.VmState.PAUSED
+                   || ctrl.state == VmController.VmState.STARTING) {
             ctrl.stop();
         }
     }
@@ -406,6 +430,10 @@ public class Qemu98Manager : Gtk.Application {
             main_content.set_vm_state(vm_name, new_state);
             if (vm_name == current_vm) {
                 main_content.update_page(ctrl);
+                bool running = new_state == VmController.VmState.RUNNING
+                            || new_state == VmController.VmState.PAUSED
+                            || new_state == VmController.VmState.STARTING;
+                main_content.config_editor.set_vm_power_state(running, vm_name);
                 update_action_states();
             }
         });

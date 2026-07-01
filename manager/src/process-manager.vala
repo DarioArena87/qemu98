@@ -77,7 +77,7 @@ public class ProcessManager : GLib.Object {
         return args.steal();
     }
 
-    /** Append -machine, -cpu, -m, -uuid, -name, and optional -bios. */
+    /** Append -machine, -cpu, -m, -uuid, -name, optional -bios, and -boot. */
     private void append_machine_args (ref GLib.GenericArray<string> args) {
         var machine = config.get_object_member("machine");
         var accel = machine.get_string_member("accelerator");
@@ -104,6 +104,13 @@ public class ProcessManager : GLib.Object {
                 args.add (bios);
             }
         }
+
+        // Build -boot order=... from device boot_order values
+        var boot_str = build_boot_order();
+        if (boot_str != "") {
+            args.add ("-boot");
+            args.add (@"order=$(boot_str)");
+        }
     }
 
     /** Append -display (and -vnc if applicable). */
@@ -116,6 +123,7 @@ public class ProcessManager : GLib.Object {
         if (display.has_member ("scale_filter")) {
             display_str += @",filter=$(display.get_string_member ("scale_filter"))";
         }
+        display_str += ",gl=on";
         args.add ("-display");
         args.add (display_str);
 
@@ -194,6 +202,93 @@ public class ProcessManager : GLib.Object {
         }
     }
 
+    /**
+     * Collect all storage devices with boot_order > 0, sort by
+     * boot_order, and return a QEMU boot-order string (e.g. "cda").
+     *
+     * Mapping: hd → c, cdrom → d, floppy → a.
+     * Returns empty string when no devices have a boot_order.
+     */
+    private string build_boot_order() {
+        if (!config.has_member("storage")) return "";
+
+        // Pair of (boot_order, qemu_letter)
+        var entries = new GLib.GenericArray<BootEntry>();
+
+        var storage = config.get_object_member("storage");
+
+        // Controller devices
+        if (storage.has_member("controllers")) {
+            var controllers = storage.get_array_member("controllers");
+            for (var i = 0; i < controllers.get_length(); i++) {
+                var ctrl = controllers.get_object_element(i);
+                if (!ctrl.has_member("devices")) continue;
+                var devs = ctrl.get_array_member("devices");
+                for (var j = 0; j < devs.get_length(); j++) {
+                    var dev = devs.get_object_element(j);
+                    if (!dev.has_member("boot_order")) continue;
+                    var order = (int) dev.get_int_member("boot_order");
+                    if (order <= 0) continue;
+                    var dev_type = dev.has_member("type")
+                        ? dev.get_string_member("type") : "hd";
+                    var letter = dev_type_to_boot_letter(dev_type);
+                    if (letter == '\0') continue;
+                    entries.add(new BootEntry() { order = order, letter = letter });
+                }
+            }
+        }
+
+        // Floppy drives
+        if (storage.has_member("floppy")) {
+            var floppies = storage.get_array_member("floppy");
+            for (var i = 0; i < floppies.get_length(); i++) {
+                var flop = floppies.get_object_element(i);
+                if (!flop.has_member("boot_order")) continue;
+                var order = (int) flop.get_int_member("boot_order");
+                if (order <= 0) continue;
+                entries.add(new BootEntry() { order = order, letter = 'a' });
+            }
+        }
+
+        if (entries.length == 0) return "";
+
+        // Sort by boot_order ascending
+        // Simple bubble sort since the list is tiny (≤4 entries).
+        // Use get()/set() with explicit owned types so ref counts are
+        // properly bumped during the swap.
+        for (int i = 0; i < (int) entries.length - 1; i++) {
+            for (int j = 0; j < (int) entries.length - 1 - i; j++) {
+                if (entries.get(j).order > entries.get(j + 1).order) {
+                    BootEntry a = entries.get(j);
+                    BootEntry b = entries.get(j + 1);
+                    entries.set(j, b);
+                    entries.set(j + 1, a);
+                }
+            }
+        }
+
+        var sb = new GLib.StringBuilder();
+        for (var i = 0; i < entries.length; i++) {
+            sb.append_c(entries.get(i).letter);
+        }
+        return sb.str;
+    }
+
+    /** Map a storage device type string to a QEMU -boot letter. */
+    private static char dev_type_to_boot_letter(string type) {
+        switch (type) {
+            case "hd":    return 'c';
+            case "cdrom": return 'd';
+            default:      return '\0';
+        }
+    }
+
+    /** Lightweight class for a (boot_order, letter) pair. */
+    private class BootEntry {
+        public int order;
+        public char letter;
+    }
+
     /** Append -drive args for disk controllers and floppy drives. */
     private void append_storage_args (ref GLib.GenericArray<string> args) {
         if (!config.has_member("storage")) return;
@@ -251,10 +346,6 @@ public class ProcessManager : GLib.Object {
             drive_str += ",media=cdrom,readonly=on";
         }
 
-        if (disk.has_member("boot_index")) {
-            drive_str += @",boot-index=$(disk.get_int_member ("boot_index"))";
-        }
-
         args.add (drive_str);
     }
 
@@ -305,9 +396,18 @@ public class ProcessManager : GLib.Object {
 
         var argv = build_arguments();
 
-        message("Launching QEMU: %s", string.joinv(" ", argv));
+        // Build the log line before we append the null sentinel
+        var command_line = string.joinv(" ", argv);
+        message("Launching QEMU: %s", command_line);
+
+        // GPtrArray.steal() does not guarantee a null-terminated array,
+        // but g_subprocess_newv() requires one. Append the sentinel.
+        argv += null;
 
         process = new GLib.Subprocess.newv(argv, GLib.SubprocessFlags.NONE);
+        if (process == null) {
+            throw new GLib.IOError.FAILED("Failed to spawn QEMU process");
+        }
 
         pid = int.parse(process.get_identifier() ?? "0");
         running = true;
@@ -315,8 +415,8 @@ public class ProcessManager : GLib.Object {
         // Monitor child exit
         process.wait_async.begin(null, on_process_exited);
 
-        message ("QEMU started (PID %d), QMP socket: %s", pid, qmp_socket_path);
-        debug ("QEMU command: %s", string.joinv (" ", argv));
+        message("QEMU started (PID %d), QMP socket: %s", pid, qmp_socket_path);
+        debug("QEMU command: %s", command_line);
 
         return true;
     }
